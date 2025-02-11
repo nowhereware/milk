@@ -1,0 +1,2 @@
+FOR %%G IN (*.slang) DO slangc %%G -profile glsl_450 -entry vertex_main -target spirv -o %%G.vert.spv
+FOR %%G IN (*.slang) DO slangc %%G -profile glsl_450 -entry pixel_main -target spirv -o %%G.frag.spv
