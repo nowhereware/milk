@@ -1,4 +1,4 @@
-package milk_core
+package milk
 
 import "core:fmt"
 import "core:os"

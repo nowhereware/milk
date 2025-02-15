@@ -1,4 +1,4 @@
-package milk_core
+package milk
 
 import "core:fmt"
 import "core:time"
@@ -82,7 +82,12 @@ context_new :: proc(conf: ^Context_Config) -> (out: Context) {
     }
 
     out.renderer = renderer_new(conf)
-    out.asset_server = asset_server_new()
+    out.asset_server = asset_server_new(&out)
+
+    // Register builtin assets
+    asset_server_register_type(&out.asset_server, Shader_Asset, shader_asset_load)
+    asset_server_register_type(&out.asset_server, Pipeline_Asset, pipeline_asset_load)
+
     out.update_fps = conf.fps
 
     out.should_quit = false
@@ -219,6 +224,7 @@ context_run :: proc(ctx: ^Context) {
         worker_pool_clear_done(&worker_pool)
 
         // Update Transform State to match the current frame before proceeding to the next
+        // Clear out the state before making another one.
         trans_state = transform_state_new(world_get_storage(&ctx.scene.world, Transform_2D), world_get_storage(&ctx.scene.world, Transform_3D))
 
         ctx.scene.frame_count += 1
@@ -230,6 +236,8 @@ context_run :: proc(ctx: ^Context) {
 
     // End internal stuff
     renderer_destroy(&ctx.renderer)
+
+    fmt.println("Here?")
 
     worker_pool_join(&worker_pool)
     worker_pool_destroy(&worker_pool)

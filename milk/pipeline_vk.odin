@@ -1,6 +1,6 @@
 #+feature dynamic-literals
 
-package milk_core
+package milk
 
 import "platform"
 

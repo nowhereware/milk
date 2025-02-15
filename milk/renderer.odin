@@ -1,4 +1,4 @@
-package milk_core
+package milk
 
 import "platform"
 
@@ -130,7 +130,7 @@ begin :: proc(rend: ^Renderer) {
     rend.commands.begin(&rend.internal, rend.window)
 }
 
-bind_graphics_pipeline :: proc(rend: ^Renderer, pipeline: ^Pipeline) {
+bind_graphics_pipeline :: proc(rend: ^Renderer, pipeline: ^Pipeline_Asset) {
     rend.commands.bind_graphics_pipeline(&rend.internal, &pipeline.internal)
 }
 

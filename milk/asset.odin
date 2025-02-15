@@ -1,7 +1,9 @@
-package milk_core
+package milk
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
 import "core:sync"
 
 ASSET_PREFIX :: "assets/"
@@ -25,12 +27,14 @@ Asset_Server :: struct {
     type_map: map[typeid]int,
     storages: [dynamic]Asset_Storage,
     load_procs: [dynamic]asset_load_proc,
+    ctx: ^Context,
 }
 
-asset_server_new :: proc() -> (out: Asset_Server) {
+asset_server_new :: proc(ctx: ^Context) -> (out: Asset_Server) {
     out.type_map = {}
     out.storages = make([dynamic]Asset_Storage)
     out.load_procs = make([dynamic]asset_load_proc)
+    out.ctx = ctx
 
     return
 }
@@ -86,6 +90,7 @@ asset_storage_new :: proc($T: typeid) -> (out: Asset_Storage) {
     out.cap = 8
     out.path_map = {}
     out.index_map = make([dynamic]string)
+    return
 }
 
 asset_storage_destroy :: proc(storage: ^Asset_Storage) {
@@ -99,9 +104,19 @@ asset_storage_add :: proc(storage: ^Asset_Storage, path: string, data: $T) {
         // Data already exists, just update the data at the path instead.
         asset_storage_update(storage, path, data)
     }
+    
+    last_time, err := os.last_write_time_by_name(asset_get_full_path(path))
+
+    if err != nil {
+        fmt.println(err)
+        panic("Error: failed to get last write time!")
+    }
 
     index := storage.length
-    storage.path_map[path] = index
+    tracker := storage.path_map[path]
+    tracker.index = index
+    tracker.last_time = last_time
+    storage.path_map[path] = tracker
 
     if index == storage.cap {
         // About to expand past the cap, time to resize
@@ -174,21 +189,23 @@ asset_get_from_path :: proc(server: ^Asset_Server, path: string, $T: typeid, loc
         panic("Error, asset types must be registered before use!", loc = loc)
     }
 
-    storage := server.storages[server.type_map[id]]
+    storage := &server.storages[server.type_map[id]]
     outer: if path not_in storage.path_map {
+        storage.path_map[path] = {}
+        tracker := &storage.path_map[path]
         // Load the asset
-        for !sync.try_lock(&storage.path_map[path].mutex) {
+        for !sync.mutex_try_lock(&tracker.mutex) {
             if path in storage.path_map {
                 break outer
             }
         }
 
-        server.load_procs[id](server, path)
+        server.load_procs[server.type_map[id]](server, path)
 
-        sync.unlock(&storage.path_map[path].mutex)
+        sync.mutex_unlock(&tracker.mutex)
     }
 
-    return asset_storage_get(&storage, path, T, loc)
+    return asset_storage_get(storage, path, T, loc)
 }
 
 asset_add :: proc(server: ^Asset_Server, path: string, data: $T, loc := #caller_location) {
@@ -211,4 +228,10 @@ asset_update :: proc(server: ^Asset_Server, path: string, data: $T, loc := #call
 
     storage := &server.storages[server.type_map[id]]
     asset_storage_update(storage, path, data)
+}
+
+asset_get_full_path :: proc(path: string, allocator := context.temp_allocator) -> (full_path: string) {
+    // Find the file.
+    path_slice := [?]string { ASSET_PREFIX, path }
+    return strings.concatenate(path_slice[:], allocator)
 }

@@ -1,4 +1,4 @@
-package milk_core
+package milk
 
 import ba "core:container/bit_array"
 import "core:mem"
@@ -13,34 +13,11 @@ Entity :: u64
 // A Bit_Array that determines the composition of an entity.
 Signature :: ba.Bit_Array
 
-// A command passed to a Data_Storage (or Component_Storage($T)) that must be run before the data is modified again
-Storage_Command :: union {
-	Command_Delete,
-}
-
-// A command to delete a given entity from the storage.
-Command_Delete :: struct {
-	entity: Entity
-}
-
-// Stores a list of entities belonging to a specific signature, as well as a map of each entity to its index
-Signature_Storage :: struct {
-	entity_map: map[Entity]int,
-	index_map: [dynamic]Entity,
-}
-
-// NEW: Storage, a replacement for Data_Storage and Component_Storage
-Storage :: struct {
-	entity_map: map[Entity]int,
-	index_map: [dynamic]Entity,
-	dense_storage: rawptr,
-	element_size: int,
-	length: int,
-	cap: int,
-	command_queue: queue.Queue(Storage_Command),
-	mutex: sync.Mutex,
-}
-
+// # World
+// The core of the ECS. This keeps track of everything including entity creation, component data storage, and signature storage. The ECS implementation used
+// in Milk is primarily based on a sparse-set ideology, where the composition of an entity is stored in its own array while the actual data is stored within
+// its own Storage array based on the component type. This was done in order to maximize add/remove operation efficiency while also keeping queries pretty
+// fast too.
 World :: struct {
 	// An array of Storage members, which store component data
 	storage_array: [dynamic]Storage,
@@ -62,32 +39,7 @@ World :: struct {
 	entity_count: u64,
 }
 
-// The type of the filter term given to a query
-Query_Term_Filter :: enum {
-    With,
-    With_Ptr,
-    Without,
-}
-
-// A filter for a query that the query needs to match
-Query_Term :: struct {
-    filter: Query_Term_Filter,
-    id: typeid
-}
-
-// The output of a query, a list of entities matching the query
-Query_Result :: struct {
-    entities: [dynamic]Entity,
-}
-
-Parent :: struct {
-    id: Entity
-}
-
-Children :: struct {
-    ids: [dynamic]Entity
-}
-
+// Creates a new ECS world.
 world_new :: proc() -> (out: World) {
 	out.storage_array = make([dynamic]Storage)
 	out.comp_map = {}
@@ -102,9 +54,10 @@ world_new :: proc() -> (out: World) {
 	return
 }
 
+// Destroys a given ECS world.
 world_destroy :: proc(world: ^World) {
 	for &storage in world.storage_array {
-		storage_destroy(&storage)
+		ecs_storage_destroy(&storage)
 	}
 
 	delete(world.storage_array)
@@ -126,12 +79,15 @@ world_destroy :: proc(world: ^World) {
 	queue.destroy(&world.available_ids)
 }
 
+// Gets the component storage of a World from a given type T.
 world_get_storage :: proc(world: ^World, $T: typeid, loc := #caller_location) -> ^Storage {
 	index := check_component(world, T)
 
 	return &world.storage_array[index]
 }
 
+// Creates a new Entity ID.
+@(private)
 get_new_id :: proc(world: ^World) -> Entity {
 	id := queue.pop_front(&world.available_ids)
 
@@ -145,6 +101,8 @@ get_new_id :: proc(world: ^World) -> Entity {
 	return id
 }
 
+// Searches within the signature array to find a desired signature
+@(private)
 search_for_signature :: proc(world: ^World, sig: Signature) -> (index: int, ok: bool) {
 	sig := sig
 	for &iter_sig, iter_index in world.signature_array {
@@ -173,7 +131,7 @@ check_signature :: proc(world: ^World, sig: Signature) -> int {
 	return len(world.signature_array) - 1
 }
 
-// Checks if a given component exists within the storage_array array. If it doesn't, it's created. Returns index of the array.
+// Checks if a given component exists within the `storage_array` array. If it doesn't, it's created. Returns index of the array.
 check_component :: proc(world: ^World, $T: typeid) -> int {
 	id := typeid_of(T)
 
@@ -183,12 +141,12 @@ check_component :: proc(world: ^World, $T: typeid) -> int {
 
 	append(&world.index_map, id)
 	world.comp_map[id] = len(world.index_map) - 1
-	append_elem(&world.storage_array, storage_new(T))
+	append_elem(&world.storage_array, ecs_storage_new(T))
 	return world.comp_map[id]
 }
 
 // Spawns a new Entity and returns its ID
-spawn :: proc(world: ^World) -> Entity {
+ecs_spawn :: proc(world: ^World) -> Entity {
 	id := get_new_id(world)
 
 	signature: Signature = {}
@@ -202,7 +160,7 @@ spawn :: proc(world: ^World) -> Entity {
 }
 
 // Despawns a given Entity, deleting its data
-despawn :: proc(world: ^World, ent: Entity) {
+ecs_despawn :: proc(world: ^World, ent: Entity) {
 	cur_sig_index := world.entity_map[ent]
 
 	signature_storage_delete_entity(&world.signature_storages[cur_sig_index], ent)
@@ -210,7 +168,7 @@ despawn :: proc(world: ^World, ent: Entity) {
 	// Add a command to each component's queue to delete the entity
 	iter := ba.make_iterator(&world.signature_array[cur_sig_index])
 	for index, ok := ba.iterate_by_set(&iter); ok; index, ok = ba.iterate_by_set(&iter) {
-		storage_add_command(&world.storage_array[index], Command_Delete { entity = ent })
+		ecs_storage_add_command(&world.storage_array[index], Command_Delete { entity = ent })
 	}
 
 	// Add the entity's ID to the available ID queue
@@ -218,14 +176,14 @@ despawn :: proc(world: ^World, ent: Entity) {
 }
 
 // Adds a component to an Entity
-add :: proc(world: ^World, entity: Entity, data: $T) {
-	if has(world, entity, T) {
-		set(world, entity, data)
+ecs_add :: proc(world: ^World, entity: Entity, data: $T) {
+	if ecs_has(world, entity, T) {
+		ecs_set(world, entity, data)
 		return
 	}
 
 	storage := world_get_storage(world, T)
-	storage_add_data(storage, entity, data)
+	ecs_storage_add_data(storage, entity, data)
 
 	current_sig := world.signature_array[world.entity_map[entity]]
 	current_sig.bits = make([dynamic]u64)
@@ -247,9 +205,9 @@ add :: proc(world: ^World, entity: Entity, data: $T) {
 }
 
 // Removes a component from an Entity
-remove :: proc(world: ^World, entity: Entity, $T: typeid) {
+ecs_remove :: proc(world: ^World, entity: Entity, $T: typeid) {
 	storage := world_get_storage(world, T)
-	storage_remove_data(storage, T, entity)
+	ecs_storage_remove_data(storage, T, entity)
 
 	current_sig := world.signature_array[world.entity_map[entity]]
 	current_sig.bits = make([dynamic]u64)
@@ -271,7 +229,7 @@ remove :: proc(world: ^World, entity: Entity, $T: typeid) {
 }
 
 // Returns if an entity has a component
-has :: proc(world: ^World, entity: Entity, $T: typeid) -> bool {
+ecs_has :: proc(world: ^World, entity: Entity, $T: typeid) -> bool {
 	check_component(world, T)
 
 	id := typeid_of(T)
@@ -283,41 +241,56 @@ has :: proc(world: ^World, entity: Entity, $T: typeid) -> bool {
 }
 
 // Returns an entity's component data for a given component
-get :: proc(world: ^World, ent: Entity, $T: typeid, loc := #caller_location) -> (data: T) {
-	if !has(world, ent, T) {
+ecs_get :: proc(world: ^World, ent: Entity, $T: typeid, loc := #caller_location) -> (data: T) {
+	if !ecs_has(world, ent, T) {
 		panic("Attempted to get nonexistent data from entity!", loc)
 	}
 
 	storage := world_get_storage(world, T)
-	data = storage_get_data(storage, T, ent)
+	data = ecs_storage_get_data(storage, T, ent)
 	return
 }
 
 // Returns a pointer to an entity's component data for a given component
-get_ptr :: proc(world: ^World, ent: Entity, $T: typeid, loc := #caller_location) -> (data: ^T) {
-	if !has(world, ent, T) {
+ecs_get_ptr :: proc(world: ^World, ent: Entity, $T: typeid, loc := #caller_location) -> (data: ^T) {
+	if !ecs_has(world, ent, T) {
 		panic("Attempted to get nonexistent data from entity!", loc)
 	}
 
 	storage := world_get_storage(world, T)
-	data = storage_get_data_ptr(storage, T, ent)
+	data = ecs_storage_get_data_ptr(storage, T, ent)
 	return
 }
 
 // Sets an entity's component data for a given component
-set :: proc(world: ^World, ent: Entity, data: $T, loc := #caller_location) {
-	if !has(world, ent, T) {
-		add(world, ent, data)
+ecs_set :: proc(world: ^World, ent: Entity, data: $T, loc := #caller_location) {
+	if !ecs_has(world, ent, T) {
+		ecs_add(world, ent, data)
 		return
 	}
 
 	storage := world_get_storage(world, T, loc)
-	storage_set_data(storage, ent, data, loc = loc)
+	ecs_storage_set_data(storage, ent, data, loc = loc)
 	return
 }
 
+// # Storage
+// The ECS World's internal way of storing component data. Storage is implemented as a sparse set, where the data itself is stored in a
+// tightly-packed array `dense_storage` and is indexed by getting indices from the "sparse array" `entity_map`, which takes the form of
+// a map type. Storage also contains an `index_map` (actually an array) that corresponds indices to Entity IDs, and the command queue.
+Storage :: struct {
+	entity_map: map[Entity]int,
+	index_map: [dynamic]Entity,
+	dense_storage: rawptr,
+	element_size: int,
+	length: int,
+	cap: int,
+	command_queue: queue.Queue(Storage_Command),
+	mutex: sync.Mutex,
+}
+
 // Creates a new Storage, given a valid type T
-storage_new :: proc($T: typeid) -> (out: Storage) {
+ecs_storage_new :: proc($T: typeid) -> (out: Storage) {
     out.entity_map = {}
     out.index_map = make([dynamic]Entity)
     out.dense_storage = make_multi_pointer([^]T, 8)
@@ -328,21 +301,49 @@ storage_new :: proc($T: typeid) -> (out: Storage) {
     return
 }
 
-storage_destroy :: proc(storage: ^Storage) {
+// Destroys a given Storage.
+ecs_storage_destroy :: proc(storage: ^Storage) {
 	delete_map(storage.entity_map)
 	delete(storage.index_map)
 	free(storage.dense_storage)
 	queue.destroy(&storage.command_queue)
 }
 
+// Copies the data of a given Storage into a new storage.
+ecs_storage_copy :: proc(storage: ^Storage) -> (out: Storage) {
+	for key, val in storage.entity_map {
+		out.entity_map[key] = val
+	}
+
+	mem.copy_non_overlapping(raw_data(out.index_map), raw_data(storage.index_map), len(storage.index_map) * size_of(Entity))
+	mem.copy_non_overlapping(out.dense_storage, storage.dense_storage, storage.length * storage.element_size)
+	out.element_size = storage.element_size
+	out.length = storage.length
+	out.cap = storage.cap
+	out.command_queue = storage.command_queue
+	out.mutex = {}
+
+	return
+}
+
+// A command passed to a Data_Storage (or Component_Storage($T)) that must be run before the data is modified again
+Storage_Command :: union {
+	Command_Delete,
+}
+
+// A command to delete a given entity from the storage.
+Command_Delete :: struct {
+	entity: Entity
+}
+
 // Adds a command to the storage's list of commands to run
-storage_add_command :: proc(storage: ^Storage, command: Storage_Command) {
+ecs_storage_add_command :: proc(storage: ^Storage, command: Storage_Command) {
 	queue.append(&storage.command_queue, command)
 }
 
 // Validates that the command queue within the storage is empty. If it isn't, we run through the queue
 // and run any actions necessary before accessing the data again, ex. deleting an entity
-storage_validate_commands :: proc(storage: ^Storage, $T: typeid) {
+ecs_storage_validate_commands :: proc(storage: ^Storage, $T: typeid) {
 	if queue.len(storage.command_queue) == 0 {
 		return
 	}
@@ -352,19 +353,19 @@ storage_validate_commands :: proc(storage: ^Storage, $T: typeid) {
 
 		switch com in command {
 			case Command_Delete: {
-				storage_remove_data(storage, T, com.entity)
+				ecs_storage_remove_data(storage, T, com.entity)
 			}
 		}
 	}
 }
 
 // Adds data of type T to a Storage of type T at a specific Entity
-storage_add_data :: proc(storage: ^Storage, entity: Entity, data: $T, loc := #caller_location) {
+ecs_storage_add_data :: proc(storage: ^Storage, entity: Entity, data: $T, loc := #caller_location) {
 	if entity in storage.entity_map {
 		panic("Error: Attempted to add component to entity more than once", loc = loc)
 	}
 
-	storage_validate_commands(storage, T)
+	ecs_storage_validate_commands(storage, T)
 
 	append(&storage.index_map, entity)
 	index := len(storage.index_map) - 1
@@ -384,7 +385,7 @@ storage_add_data :: proc(storage: ^Storage, entity: Entity, data: $T, loc := #ca
 }
 
 // Removes data associated with an entity within a Storage of type T
-storage_remove_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc := #caller_location) {
+ecs_storage_remove_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc := #caller_location) {
 	if entity not_in storage.entity_map {
 		panic("Error: Attempted to remove nonexistent entity", loc = loc)
 	}
@@ -404,12 +405,12 @@ storage_remove_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc :
 }
 
 // Gets a copy/const ref to the data associated with an entity within a Storage
-storage_get_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc := #caller_location) -> T {
+ecs_storage_get_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc := #caller_location) -> T {
 	if entity not_in storage.entity_map {
 		panic("Error: Attempted to get nonexistent entity", loc = loc)
 	}
 
-	storage_validate_commands(storage, T)
+	ecs_storage_validate_commands(storage, T)
 
 	data := cast([^]T)storage.dense_storage
 
@@ -417,12 +418,12 @@ storage_get_data :: proc(storage: ^Storage, $T: typeid, entity: Entity, loc := #
 }
 
 // Gets a mutable (editable) reference to the data associated with an entity within a Storage
-storage_get_data_ptr :: proc(storage: ^Storage, $T: typeid, entity: Entity) -> ^T {
+ecs_storage_get_data_ptr :: proc(storage: ^Storage, $T: typeid, entity: Entity) -> ^T {
 	if entity not_in storage.entity_map {
 		panic("Error: Attempted to get nonexistent entity")
 	}
 
-	storage_validate_commands(storage, T)
+	ecs_storage_validate_commands(storage, T)
 
 	data := cast([^]T)storage.dense_storage
 
@@ -430,16 +431,25 @@ storage_get_data_ptr :: proc(storage: ^Storage, $T: typeid, entity: Entity) -> ^
 }
 
 // Sets the data associated with an entity within a Component Storage
-storage_set_data :: proc(storage: ^Storage, entity: Entity, data: $T, loc := #caller_location) {
+ecs_storage_set_data :: proc(storage: ^Storage, entity: Entity, data: $T, loc := #caller_location) {
 	if entity not_in storage.entity_map {
 		panic("Error: Attempted to set data of nonexistent entity", loc = loc)
 	}
 
-	storage_validate_commands(storage, T)
+	ecs_storage_validate_commands(storage, T)
 
 	d := cast([^]T)storage.dense_storage
 
 	d[storage.entity_map[entity]] = data
+}
+
+// # Signature Storage
+// The ECS World's way of managing Entity compositions. A "signature" is a bit array where each bit corresponds to a typeid (see `type_map` in the World), and the
+// corresponding Signature_Storage contains each entity ID that has a composition matching this signature. This is stored in a sparse set format similar to Storage,
+// where entities are stored in a dense array `index_map` and can be looked up using the sparse array `entity_map`.
+Signature_Storage :: struct {
+	entity_map: map[Entity]int,
+	index_map: [dynamic]Entity,
 }
 
 // Creates a new Signature Storage, given a signature
@@ -471,8 +481,32 @@ signature_storage_destroy :: proc(storage: ^Signature_Storage) {
 	delete(storage.index_map)
 }
 
+// # Query Term Filter
+// A filter given to a specific query. This simply determines what kind of operation we want to perform on a component we're searching for,
+// which is stored inside the overarching struct `Query_Term`.
+Query_Term_Filter :: enum {
+    With,
+    With_Ptr,
+    Without,
+}
+
+// # Query Term
+// A "term" for a query run on the ECS world. Contains a Query_Term_Filter `filter`, which determines how we want to filter the type contained,
+// and a type of a component in the term `id`. When a query is run, it uses the terms provided to determine what components are desired, how
+// they're going to be used, and what components are explicitly *not* wanted.
+Query_Term :: struct {
+    filter: Query_Term_Filter,
+    id: typeid
+}
+
+// # Query Result
+// Contains the output of a query, which is a list of entities matching the query.
+Query_Result :: struct {
+    entities: [dynamic]Entity,
+}
+
 // A query term to find entities that have a component T
-with :: proc($T: typeid) -> Query_Term {
+ecs_with :: proc($T: typeid) -> Query_Term {
     return {
         filter = .With,
         id = typeid_of(T)
@@ -480,7 +514,7 @@ with :: proc($T: typeid) -> Query_Term {
 }
 
 // A query term to gain mutable access to pointers with a component T
-with_ptr :: proc($T: typeid) -> Query_Term {
+ecs_with_ptr :: proc($T: typeid) -> Query_Term {
     return {
         filter = .With_Ptr,
         id = typeid_of(T)
@@ -488,7 +522,7 @@ with_ptr :: proc($T: typeid) -> Query_Term {
 }
 
 // A query term to find entities that do not have a component T
-without :: proc($T: typeid) -> Query_Term {
+ecs_without :: proc($T: typeid) -> Query_Term {
     return {
         filter = .Without,
         id = typeid_of(T)
@@ -496,11 +530,7 @@ without :: proc($T: typeid) -> Query_Term {
 }
 
 // Queries through the World for entities matching a set of Query_Terms, and returns the result (A list of entities)
-query :: proc {
-    query_world,
-}
-
-query_world :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
+ecs_query :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
     out.entities = make([dynamic]Entity, context.temp_allocator)
 
     // Turn our terms into a signature
@@ -577,74 +607,107 @@ query_world :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
 }
 
 // Returns a list of constant data of type T given a World, Query_Result, and the type desired
-query_get :: proc {
-    query_get_world,
-}
-
-query_get_world :: proc(world: ^World, query: ^Query_Result, $T: typeid) -> (out: [dynamic]T) {
+ecs_query_get :: proc(world: ^World, query: ^Query_Result, $T: typeid) -> (out: [dynamic]T) {
     out = make([dynamic]T, context.temp_allocator)
 
     storage := world_get_storage(world, T)
 
     for ent in query.entities {
-        append(&out, storage_get_data(storage, T, ent))
+        append(&out, ecs_storage_get_data(storage, T, ent))
     }
 
     return
 }
 
 // Returns a list of mutable data of type T given a World, Query_Result, and the type desired
-query_get_ptr :: proc {
-    query_get_ptr_world,
-}
-
-query_get_ptr_world :: proc(world: ^World, query: ^Query_Result, $T: typeid) -> (out: [dynamic]^T) {
+ecs_query_get_ptr :: proc(world: ^World, query: ^Query_Result, $T: typeid) -> (out: [dynamic]^T) {
     out = make([dynamic]^T, context.temp_allocator)
 
     storage := world_get_storage(world, T)
 
     for ent in query.entities {
-        append(&out, storage_get_data_ptr(storage, T, ent))
+        append(&out, ecs_storage_get_data_ptr(storage, T, ent))
     }
 
     return
 }
 
-add_child :: proc(world: ^World, parent: Entity, child: Entity) {
-    if has(world, parent, Children) {
+// # Parent
+// A component signifying that a given entity is a child of the entity stored in `id`.
+Parent :: struct {
+    id: Entity
+}
+
+// # Children
+// A component signifying that a given entity has a list of children stored in the `ids` array.
+Children :: struct {
+    ids: [dynamic]Entity
+}
+
+ecs_add_child :: proc(world: ^World, parent: Entity, child: Entity) {
+    if ecs_has(world, parent, Children) {
         // Parent already has a children struct
-        children := get_ptr(world, parent, Children)
+        children := ecs_get_ptr(world, parent, Children)
         append(&children.ids, child)
     }
 }
 
 // Moves an entity `ent` to be a child of another entity `parent`, either from a prior parent or uninherited.
-reparent :: proc(world: ^World, ent: Entity, parent: Entity) {
-    if has(world, ent, Parent) {
+ecs_reparent :: proc(world: ^World, ent: Entity, parent: Entity) {
+    if ecs_has(world, ent, Parent) {
         // We need to get the global transforms from the entity's relative transforms
-        prev_par := get(world, ent, Parent).id
+        prev_par := ecs_get(world, ent, Parent).id
 
         // For each transform type, update it to be a global transform
-        if has(world, prev_par, Transform_2D) && has(world, ent, Transform_2D) {
-            prev_par_trans_2d := get(world, prev_par, Transform_2D)
-            ent_trans_2d := get_ptr(world, ent, Transform_2D)
+        if ecs_has(world, prev_par, Transform_2D) && ecs_has(world, ent, Transform_2D) {
+            prev_par_trans_2d := ecs_get(world, prev_par, Transform_2D)
+            ent_trans_2d := ecs_get_ptr(world, ent, Transform_2D)
             ent_trans_2d.position += prev_par_trans_2d.position
         }
 
-        if has(world, prev_par, Transform_3D) && has(world, ent, Transform_3D) {
-            prev_par_trans_3d := get(world, prev_par, Transform_3D)
-            ent_trans_3d := get_ptr(world, ent, Transform_3D)
+        if ecs_has(world, prev_par, Transform_3D) && ecs_has(world, ent, Transform_3D) {
+            prev_par_trans_3d := ecs_get(world, prev_par, Transform_3D)
+            ent_trans_3d := ecs_get_ptr(world, ent, Transform_3D)
             // TODO: This logic is incorrect. We only need to add positions.
             ent_trans_3d.mat += prev_par_trans_3d.mat
         }
 
         // Delete the child from the parent
-        parent_children := get_ptr(world, prev_par, Children)
+        parent_children := ecs_get_ptr(world, prev_par, Children)
         for child, index in parent_children.ids {
             if child == ent {
                 unordered_remove(&parent_children.ids, index)
                 break
             }
         }
+
+		ecs_remove(world, ent, Parent)
+		// ent is now freshly unparented
     }
+
+	// Parent ent to its new parent
+	ecs_add(world, ent, Parent { id = parent })
+
+	// Add ent to parent's children
+	if ecs_has(world, parent, Children) {
+		children := ecs_get_ptr(world, parent, Children)
+		append(&children.ids, ent)
+	} else {
+		children := make([dynamic]Entity)
+		append(&children, ent)
+		ecs_add(world, parent, Children { ids = children })
+	}
+
+	if ecs_has(world, ent, Transform_2D) && ecs_has(world, parent, Transform_2D) {
+		parent_trans := ecs_get(world, parent, Transform_2D)
+		ent_trans := ecs_get_ptr(world, ent, Transform_2D)
+		ent_trans.position -= parent_trans.position
+	}
+
+	if ecs_has(world, ent, Transform_3D) && ecs_has(world, parent, Transform_3D) {
+		parent_trans := ecs_get(world, parent, Transform_3D)
+		ent_trans := ecs_get_ptr(world, ent, Transform_3D)
+		// TODO: still incorrect adding logic for positions
+		ent_trans.mat -= parent_trans.mat
+	}
 }
