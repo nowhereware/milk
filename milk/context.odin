@@ -210,6 +210,9 @@ context_run :: proc(ctx: ^Context) {
 
         // Synchronized start
         sync.barrier_wait(&worker_pool.sync)
+
+        // TODO: Asset hot-reloading
+
         // Synchronized end
         sync.barrier_wait(&worker_pool.sync)
 

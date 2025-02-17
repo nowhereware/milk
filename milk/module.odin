@@ -7,7 +7,7 @@ System :: union {
     // Typically an update task
     proc(scene: ^Scene, delta: f64),
     // Typically a draw task
-    proc(scene: ^Scene, delta: f64, trans_state: ^Transform_State),
+    proc(scene: ^Scene, alpha: f64, trans_state: ^Transform_State),
 }
 
 // # Task Type
@@ -71,7 +71,7 @@ task_run :: proc(task: ^Task, ctx: ^Context, delta: f64, trans_state: ^Transform
             case proc(scene: ^Scene, delta: f64): {
                 t(ctx.scene, delta)
             }
-            case proc(world: ^Scene, delta: f64, trans_state: ^Transform_State): {
+            case proc(world: ^Scene, alpha: f64, trans_state: ^Transform_State): {
                 t(ctx.scene, delta, trans_state)
             }
         }

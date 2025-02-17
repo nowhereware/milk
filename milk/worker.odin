@@ -208,9 +208,7 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
     outer: for sync.atomic_load(&pool.is_running) {
         sync.barrier_wait(&pool.sync)
 
-        task, ok := worker_pool_pop_waiting(pool)
-
-        for ; ok; task, ok = worker_pool_pop_waiting(pool) {
+        for task, ok := worker_pool_pop_waiting(pool); ok; task, ok = worker_pool_pop_waiting(pool) {
             // Run the task
             accumulator += d.timestep.frame_duration
 

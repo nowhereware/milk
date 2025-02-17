@@ -60,58 +60,36 @@ File_Suffix :: enum {
 	Geom,
 }
 
-@(private="file")
-File_Data :: struct {
-	file_name: string,
-	files_found: [File_Suffix]string,
-	suffixes_found: [dynamic]File_Suffix,
-	ctx: runtime.Context,
-}
-
-@(private="file")
-enumerate_file :: proc "cdecl" (data: rawptr, dirname, fname: cstring) -> SDL.EnumerationResult {
-	d := cast(^File_Data)data
-	context = d.ctx
-	fname_str := strings.clone_from_cstring(fname, context.temp_allocator)
-
-	if strings.contains(fname_str, d.file_name) {
-		if strings.has_prefix(fname_str, ".vert.spv") {
-			append(&d.suffixes_found, File_Suffix.Vert)
-			d.files_found[.Vert] = fname_str
-		} else if strings.has_prefix(fname_str, ".frag.spv") {
-			append(&d.suffixes_found, File_Suffix.Frag)
-			d.files_found[.Frag] = fname_str
-		} else if strings.has_prefix(fname_str, ".comp.spv") {
-			append(&d.suffixes_found, File_Suffix.Comp)
-			d.files_found[.Comp] = fname_str
-		} else if strings.has_prefix(fname_str, ".geom.spv") {
-			append(&d.suffixes_found, File_Suffix.Geom)
-			d.files_found[.Geom] = fname_str
-		}
-	}
-
-	return .CONTINUE
-}
-
 pipeline_asset_load :: proc(server: ^Asset_Server, path: string) {
 	file_path := asset_get_full_path(path)
 	// Get directory of file
-	slash_index := strings.last_index(file_path, "/")
-	folder_path, ok := strings.substring_to(file_path, slash_index)
-	file_name, file_ok := strings.substring_from(file_path, slash_index + 1)
-	folder_path_c := strings.clone_to_cstring(folder_path, context.temp_allocator)
-	file_data: File_Data = {
-		file_name = file_name,
-		ctx = context
-	}
+	parent_folder := file_get_parent_folder(file_path)
+	file_name := file_get_name(file_path)
+	matching_files := file_search(parent_folder, file_name)
 
-	success := SDL.EnumerateDirectory(folder_path_c, enumerate_file, &file_data)
+	files: [File_Suffix]string
+	suffixes_found: [dynamic]File_Suffix
+
+	for file in matching_files {
+		suffix := file_get_suffix(file)
+		if suffix == ".vert.spv" {
+			files[.Vert] = file
+			append(&suffixes_found, File_Suffix.Vert)
+		} else if suffix == ".frag.spv" {
+			files[.Frag] = file
+			append(&suffixes_found, File_Suffix.Frag)
+		} else if suffix == ".comp.spv" {
+			files[.Comp] = file
+			append(&suffixes_found, File_Suffix.Comp)
+		} else if suffix == ".geom.spv" {
+			files[.Geom] = file
+			append(&suffixes_found, File_Suffix.Geom)
+		}
+	}
 
 	// Enumerate through the found shaders and create pipeline(s)
 	type: Pipeline_Type
-	sub_slash_index := strings.last_index(path, "/")
-	sub_path, sub_ok := strings.substring_to(path, sub_slash_index)
-	outer: for suffix in file_data.suffixes_found {
+	outer: for suffix in suffixes_found {
 		switch suffix {
 			case .Comp: {
 				type = .Compute
@@ -136,11 +114,7 @@ pipeline_asset_load :: proc(server: ^Asset_Server, path: string) {
 			// TODO: Implement compute pipeline
 		}
 		case .Graphics: {
-			frag_strings := [?]string { sub_path, "/", file_data.files_found[.Frag] }
-			vert_strings := [?]string { sub_path, "/", file_data.files_found[.Vert] }
-			frag_path, frag_ok := strings.concatenate(frag_strings[:], context.temp_allocator)
-			vert_path, vert_ok := strings.concatenate(vert_strings[:], context.temp_allocator)
-			asset_add(server, path, pipeline_graphics_new(&server.ctx.renderer, asset_get(server, frag_path, Shader_Asset), asset_get(server, vert_path, Shader_Asset)))
+			asset_add(server, path, pipeline_graphics_new(&server.ctx.renderer, asset_get(server, files[.Frag], Shader_Asset), asset_get(server, files[.Vert], Shader_Asset)))
 		}
 	}
 }

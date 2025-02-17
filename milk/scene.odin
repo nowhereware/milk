@@ -30,6 +30,7 @@ scene_new :: proc {
     scene_new_with_procs,
 }
 
+// Creates a new scene without any load or unload procedures initialized.
 scene_new_empty :: proc() -> (ctx: ^Context, out: ^Scene) {
     out = new(Scene)
 
@@ -40,6 +41,7 @@ scene_new_empty :: proc() -> (ctx: ^Context, out: ^Scene) {
     return
 }
 
+// Creates a new scene with a load and unload procedure.
 scene_new_with_procs :: proc(ctx: ^Context, load: Scene_Load_Proc, unload: Scene_Unload_Proc) -> (out: ^Scene) {
     out = new(Scene)
 
@@ -53,10 +55,12 @@ scene_new_with_procs :: proc(ctx: ^Context, load: Scene_Load_Proc, unload: Scene
     return
 }
 
+// Adds a given task to a scene's module.
 scene_add_task :: proc(scene: ^Scene, task: Task) {
     append(&scene.module.tasks, task)
 }
 
+// Destroys a scene.
 scene_destroy :: proc(scene: ^Scene) {
     module_destroy(&scene.module)
     world_destroy(&scene.world)

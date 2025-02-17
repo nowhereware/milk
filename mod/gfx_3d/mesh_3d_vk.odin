@@ -1,7 +1,7 @@
-package milk_gfx_3d_platform
+package milk_gfx_3d
 
-import pt "../../../core/platform"
-import "../../../core"
+import pt "../../milk/platform"
+import "../../milk"
 import "core:fmt"
 import vk "vendor:vulkan"
 
@@ -12,9 +12,9 @@ Mesh_Vulkan :: struct {
 	uniform_buffers_mapped: [pt.FRAME_COUNT]rawptr
 }
 
-mesh_vulkan_new :: proc(rend: ^core.Renderer_Internal, vertices: []core.Vertex, indices: []u16) -> Mesh_Internal {
+mesh_vulkan_new :: proc(rend: ^milk.Renderer_Internal, vertices: []milk.Vertex, indices: []u16) -> Mesh_Internal {
 	out: Mesh_Vulkan
-	rend := &rend.(pt.Renderer_Vulkan)
+	rend := &rend.(milk.Renderer_Vulkan)
 
 	out.vertex = pt.vulkan_create_vertex_buffer(rend, vertices)
 	out.index = pt.vulkan_create_index_buffer(rend, indices)
@@ -23,8 +23,8 @@ mesh_vulkan_new :: proc(rend: ^core.Renderer_Internal, vertices: []core.Vertex, 
 	return out
 }
 
-mesh_vulkan_bind_buffers :: proc(rend: ^pt.Renderer_Internal, mesh: ^Mesh_Internal) {
-	rend := &rend.(pt.Renderer_Vulkan)
+mesh_vulkan_bind_buffers :: proc(rend: ^milk.Renderer_Internal, mesh: ^Mesh_Internal) {
+	rend := &rend.(milk.Renderer_Vulkan)
 	mesh := &mesh.(Mesh_Vulkan)
 
 	vertex_buffers := [?]vk.Buffer{mesh.vertex.buffer}
@@ -33,26 +33,26 @@ mesh_vulkan_bind_buffers :: proc(rend: ^pt.Renderer_Internal, mesh: ^Mesh_Intern
 	vk.CmdBindIndexBuffer(rend.command_buffers[rend.current_frame], mesh.index.buffer, 0, .UINT16)
 }
 
-mesh_vulkan_draw :: proc(rend: ^pt.Renderer_Internal, mesh: ^Mesh_Internal, pos: ^phys_3d.Transform_3D, cam_pos: ^phys_3d.Transform_3D) {
-	rend := &rend.(pt.Renderer_Vulkan)
+mesh_vulkan_draw :: proc(rend: ^milk.Renderer_Internal, mesh: ^Mesh_Internal, pos: ^milk.Transform_3D, cam_pos: ^milk.Transform_3D, cam: ^Camera_3D) {
+	rend := &rend.(milk.Renderer_Vulkan)
 	mesh := &mesh.(Mesh_Vulkan)
 
-	ubo := pt.Uniform_Buffer_Object {
+	ubo := milk.Uniform_Buffer_Object {
 		model = pos.mat,
 		view = cam_pos.mat,
-		//proj = cam.projection
+		proj = cam.projection
 	}
 
-	mesh.uniform_buffers_mapped[rend.current_frame] = &ubo
+	mesh.uniform_buffers_mapped[rend.swapchain.current_frame] = &ubo
 
 	vk.CmdDrawIndexed(rend.command_buffers[rend.current_frame], cast(u32)mesh.index.length, 1, 0, 0, 0)
 }
 
-mesh_vulkan_destroy :: proc(rend: ^pt.Renderer_Internal, mesh: ^Mesh_Internal) {
-	rend := &rend.(pt.Renderer_Vulkan)
+mesh_vulkan_destroy :: proc(rend: ^milk.Renderer_Internal, mesh: ^Mesh_Internal) {
+	rend := &rend.(milk.Renderer_Vulkan)
 	mesh := &mesh.(Mesh_Vulkan)
 
-	for i := 0; i < pt.FRAME_OVERLAP; i += 1 {
+	for i := 0; i < rend.frame_count; i += 1 {
 		vk.DestroyBuffer(rend.device.ptr, mesh.uniform_buffers[i].buffer, nil)
 		vk.FreeMemory(rend.device.ptr, mesh.uniform_buffers[i].memory, nil)
 	}

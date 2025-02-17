@@ -10,14 +10,6 @@ ASSET_PREFIX :: "assets/"
 
 asset_load_proc :: #type proc(server: ^Asset_Server, path: string)
 
-// # Asset_Handle
-// A handle to an asset of an unknown type, via a pointer to its server and its filepath.
-// When this handle is actually used, the data given is of the correct type at the path.
-Asset_Handle :: struct {
-    server: ^Asset_Server,
-    path: string,
-}
-
 // # Asset_Server
 // A server used to access assets of variable but preregistered types. Stored within the server
 // is a dynamic array of Asset_Storage(s), which internally keep track of the assets loaded. To
@@ -62,12 +54,71 @@ asset_server_register_type :: proc(server: ^Asset_Server, $T: typeid, load_proc:
     append(&server.load_procs, load_proc)
 }
 
+// # Asset_Handle
+// A handle to an asset of an unknown type, via a pointer to its server and its filepath.
+// When this handle is actually used, the data given is of the correct type at the path.
+Asset_Handle :: struct {
+    server: ^Asset_Server,
+    path: string,
+    id: typeid,
+}
+
+// Creates a new Asset Handle by validating that the desired data exists and returning the
+// handle.
+asset_get_handle :: proc(server: ^Asset_Server, path: string, $T: typeid) -> Asset_Handle {
+    if !asset_exists(server, path, T) {
+        asset_get(server, path, T)
+    }
+
+    return {
+        server = server,
+        path = path,
+        id = typeid_of(T)
+    }
+}
+
+Asset_Type :: enum {
+    Dependent,
+    File,
+}
+
+@(private)
+Asset_Internal_Type :: union {
+    Asset_Dependent,
+    Asset_File
+}
+
+Asset_Dependent :: struct {
+    dependencies: [dynamic]Asset_Handle,
+}
+
+Asset_File :: struct {
+    last_time: os.File_Time,
+    full_path: string,
+    id: typeid,
+}
+
 // TODO: Implement hot-reloading
 Asset_Tracker :: struct {
     index: int,
     mutex: sync.Mutex,
-    // The last time this asset was edited. If the time returned by the OS function is different, then we reload the asset.
-    last_time: os.File_Time,
+    type: Asset_Internal_Type,
+    id: typeid,
+}
+
+_asset_reload :: proc(server: ^Asset_Server, tracker: ^Asset_Tracker) {
+    sync.mutex_lock(&tracker.mutex)
+
+    switch type in tracker.type {
+        case Asset_Dependent: {
+
+        }
+        case Asset_File: {
+            server.load_procs[server.type_map[tracker.id]](server, asset_get_full_path(server.storages[server.type_map[tracker.id]].index_map[tracker.index]))
+        }
+    }
+
+    sync.mutex_unlock(&tracker.mutex)
 }
 
 // # Asset_Storage
@@ -79,6 +130,7 @@ Asset_Storage :: struct {
     length: int,
     elem_size: int,
     cap: int,
+    id: typeid,
     path_map: map[string]Asset_Tracker,
     index_map: [dynamic]string,
 }
@@ -88,6 +140,7 @@ asset_storage_new :: proc($T: typeid) -> (out: Asset_Storage) {
     out.length = 0
     out.elem_size = size_of(T)
     out.cap = 8
+    out.id = typeid_of(T)
     out.path_map = {}
     out.index_map = make([dynamic]string)
     return
@@ -115,7 +168,7 @@ asset_storage_add :: proc(storage: ^Asset_Storage, path: string, data: $T) {
     index := storage.length
     tracker := storage.path_map[path]
     tracker.index = index
-    tracker.last_time = last_time
+    tracker.id = storage.id
     storage.path_map[path] = tracker
 
     if index == storage.cap {
@@ -234,4 +287,19 @@ asset_get_full_path :: proc(path: string, allocator := context.temp_allocator) -
     // Find the file.
     path_slice := [?]string { ASSET_PREFIX, path }
     return strings.concatenate(path_slice[:], allocator)
+}
+
+asset_exists :: proc(server: ^Asset_Server, path: string, $T: typeid, loc := #caller_location) -> bool {
+    id := typeid_of(T)
+    if id not_in server.type_map {
+        panic("Error, asset types must be registered before use!", loc)
+    }
+
+    storage := server.storages[server.type_map[id]]
+
+    if path not_in storage.path_map {
+        return false
+    }
+
+    return true
 }

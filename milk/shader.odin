@@ -50,7 +50,7 @@ shader_asset_load :: proc(server: ^Asset_Server, path: string) {
     // Find the file.
     file_path := asset_get_full_path(path)
 
-    data, ok := os.read_entire_file_from_filename(file_path)
+    data, ok := file_get(file_path)
 
     if !ok {
         panic("Failed to read shader asset file!")

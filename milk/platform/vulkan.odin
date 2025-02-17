@@ -178,6 +178,7 @@ vulkan_create_instance :: proc(app_info: ^vk.ApplicationInfo, window: ^SDL.Windo
 
     if ENABLE_LAYERS {
         vulkan_request_extension(&inst_ext_names, vk.EXT_DEBUG_UTILS_EXTENSION_NAME, instance_extensions)
+
         layer_props := vulkan_get_available_layers()
         vulkan_request_layer(&layers, "VK_LAYER_KHRONOS_validation", layer_props, true)
 
