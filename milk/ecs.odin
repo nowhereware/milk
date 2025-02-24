@@ -5,7 +5,6 @@ import "core:mem"
 import "core:container/queue"
 import "core:slice"
 import "core:sync"
-import "core:fmt"
 
 // An identifier for an entity within the ECS.
 Entity :: u64
@@ -668,8 +667,8 @@ ecs_reparent :: proc(world: ^World, ent: Entity, parent: Entity) {
         if ecs_has(world, prev_par, Transform_3D) && ecs_has(world, ent, Transform_3D) {
             prev_par_trans_3d := ecs_get(world, prev_par, Transform_3D)
             ent_trans_3d := ecs_get_ptr(world, ent, Transform_3D)
-            // TODO: This logic is incorrect. We only need to add positions.
-            ent_trans_3d.mat += prev_par_trans_3d.mat
+            // TODO: Need to add rotations as well
+            transform_translate(ent_trans_3d, prev_par_trans_3d.mat[3].xyz)
         }
 
         // Delete the child from the parent
@@ -707,7 +706,7 @@ ecs_reparent :: proc(world: ^World, ent: Entity, parent: Entity) {
 	if ecs_has(world, ent, Transform_3D) && ecs_has(world, parent, Transform_3D) {
 		parent_trans := ecs_get(world, parent, Transform_3D)
 		ent_trans := ecs_get_ptr(world, ent, Transform_3D)
-		// TODO: still incorrect adding logic for positions
-		ent_trans.mat -= parent_trans.mat
+		// TODO: Incorrect rotation logic
+		transform_translate(ent_trans, -parent_trans.mat[3].xyz)
 	}
 }

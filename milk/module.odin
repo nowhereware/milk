@@ -1,5 +1,7 @@
 package milk
 
+import "core:fmt"
+
 // # System
 // A procedure typically run as part of a Module. A System has a limited amount of valid proc signatures, which are stored here.
 System :: union {
@@ -42,37 +44,66 @@ transform_state_new :: proc(t2d_ptr: ^Storage, t3d_ptr: ^Storage) -> (out: Trans
     return
 }
 
+// Gets a list of Transform_2D(s) from a state and a list of query entities.
+transform_state_get_2d :: proc(state: ^Transform_State, query: ^Query_Result) -> (out: [dynamic]Transform_2D) {
+    for ent in query.entities {
+        append(&out, ecs_storage_get_data(&state.t2d, Transform_2D, ent))
+    }
+    
+    return
+}
+
+// Gets a list of Transform_3D(s) from a state and a list of query entities.
+transform_state_get_3d :: proc(state: ^Transform_State, query: ^Query_Result) -> (out: [dynamic]Transform_3D) {
+    for ent in query.entities {
+        append(&out, ecs_storage_get_data(&state.t3d, Transform_3D, ent))
+    }
+
+    return
+}
+
 // # Task
 // A collection of systems designed to be run in order. Ideally, systems should be sorted into tasks based on mutable data access,
 // for example all systems that modify a Transform_2D should be in the same task to minimize mutex waiting.
 Task :: struct {
+    name: typeid,
     type: Task_Type,
     priority: Task_Priority,
+    // A list of tasks this task depends on.
+    dependencies: [dynamic]typeid,
     systems: [dynamic]System,
 }
 
 // Creates a new Task given a list of systems, a type, and a priority.
-task_new :: proc(systems: ..System, type: Task_Type = .Update, priority: Task_Priority = .Low) -> (out: Task) {
+task_new :: proc($T: typeid, systems: ..System, dependencies: [dynamic]typeid = nil, type: Task_Type = .Update, priority: Task_Priority = .Low) -> (out: Task) {
+    fmt.println("Creating task:", typeid_of(T))
     append_elems(&out.systems, ..systems[:])
 
+    out.name = typeid_of(T)
     out.type = type
     out.priority = priority
+
+    if out.dependencies == nil {
+        out.dependencies = make([dynamic]typeid)
+    } else {
+        out.dependencies = dependencies
+    }
 
     return
 }
 
 // Runs a task given a list of required data.
-task_run :: proc(task: ^Task, ctx: ^Context, delta: f64, trans_state: ^Transform_State) {
+task_run :: proc(task: ^Task, ctx: ^Context, trans_state: ^Transform_State) {
     for system in task.systems {
         switch t in system {
             case proc(world: ^World): {
                 t(&ctx.scene.world)
             }
             case proc(scene: ^Scene, delta: f64): {
-                t(ctx.scene, delta)
+                t(ctx.scene, ctx.update_fps)
             }
-            case proc(world: ^Scene, alpha: f64, trans_state: ^Transform_State): {
-                t(ctx.scene, delta, trans_state)
+            case proc(scene: ^Scene, alpha: f64, trans_state: ^Transform_State): {
+                t(ctx.scene, ctx.timestep.alpha, trans_state)
             }
         }
     }
@@ -80,6 +111,9 @@ task_run :: proc(task: ^Task, ctx: ^Context, delta: f64, trans_state: ^Transform
 
 // Destroys a given task.
 task_destroy :: proc(task: ^Task) {
+    if task.dependencies != nil {
+        delete(task.dependencies)
+    }
     delete(task.systems)
 }
 

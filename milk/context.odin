@@ -1,14 +1,17 @@
 package milk
 
+import pt "platform"
+
 import "core:fmt"
 import "core:time"
-import "core:strings"
-import "core:thread"
 import "core:sync"
 import "core:container/queue"
 import "core:os"
 import SDL "vendor:sdl3"
 
+// # Context Config
+// Configures the Context with a list of given settings. To use, create a config from `context_config_new()` to get a premade set of default
+// attributes, then adjust as needed.
 Context_Config :: struct {
     /// The title of the main window of the context. This is also used for the internally stored name of the project.
     title: cstring,
@@ -21,10 +24,10 @@ Context_Config :: struct {
     /// The version of the application.
     version: UVector3,
     /// The preferred rendering backend.
-    renderer: Renderer_Type,
+    renderer: pt.Renderer_Type,
     /// The simulation FPS of the game. Note that Rendering FPS is separate, and generally matches the refresh rate of the monitor.
     fps: f64,
-    /// The clear color for the primary viewport
+    /// The clear color for the primary viewport.
     clear_color: Color,
 }
 
@@ -59,11 +62,11 @@ Context :: struct {
     update_fps: f64,
 
     // Workers
-
-    // List of tasks
-    task_list: [dynamic]Task,
-    // A slice that is iterated through each frame by each thread
+    
+    // A queue of tasks passed to each thread.
     task_queue: queue.Queue(Task),
+    // The timestep of the application
+    timestep: Timestep,
 
     // User data
 
@@ -98,15 +101,20 @@ context_new :: proc(conf: ^Context_Config) -> (out: Context) {
     return
 }
 
-context_add_task :: proc(ctx: ^Context, task: Task) {
-    append(&ctx.task_list, task)
+context_add_module :: proc(ctx: ^Context, module: Module, $T: typeid) {
+    id := typeid_of(T)
+
+    if id not_in ctx.module_map {
+        append(&ctx.module_list, module)
+        ctx.module_map[id] = len(ctx.module_list) - 1
+    }
 }
 
 // Changes the scene to a preloaded scene
 context_change_scene_to :: proc(ctx: ^Context, scene: ^Scene) {
     old_scene := ctx.scene
     ctx.scene = scene
-    ctx.scene.scene_unload(old_scene)
+    old_scene.scene_unload(old_scene)
     scene_destroy(old_scene)
 }
 
@@ -134,8 +142,7 @@ context_run :: proc(ctx: ^Context) {
 
     // Fixed timestep
     prev_time := time.tick_now()
-    timestep := timestep_new(prev_time)
-    alpha_accumulator: f64 = 0.0
+    ctx.timestep = timestep_new(prev_time)
 
     // Prior frame transforms
     // We pass these to draw tasks so that they can perform interpolation
@@ -146,7 +153,6 @@ context_run :: proc(ctx: ^Context) {
     for &thread, index in worker_pool.threads {
         worker := cast(^Worker_Thread_Data)thread.data
         worker.ctx = ctx
-        worker.timestep = &timestep
         worker.transform_state = &trans_state
     }
 
@@ -155,6 +161,8 @@ context_run :: proc(ctx: ^Context) {
     worker_pool_start(&worker_pool)
 
     run_loop: for !ctx.should_quit {
+        profile_start(task_profiler)
+        profile_set_user_data(task_profiler, ctx.scene.frame_count)
         // Poll events
         for SDL.PollEvent(&event) {
             #partial switch event.type {
@@ -167,7 +175,7 @@ context_run :: proc(ctx: ^Context) {
                         ctx.should_quit = true
                         break
                     } else if event.key.key == SDL.K_F4 {
-                        set_clear_color(&ctx.renderer, color_from_percent({0.0, 0.0, 0.0, 1.0}))
+                        renderer_set_clear_color(&ctx.renderer, color_from_percent({0.0, 0.0, 0.0, 1.0}))
                         fmt.println("Changed!")
                     }
                 }
@@ -184,41 +192,65 @@ context_run :: proc(ctx: ^Context) {
                 }
             }
         }
+
+        take_step(task_profiler, "Poll Events")
         
         if !ctx.should_render {
             time.sleep(100 * time.Millisecond)
             continue
         }
 
-        timestep.frame_duration = time.duration_seconds(time.tick_since(prev_time))
+        ctx.timestep.frame_duration = time.duration_seconds(time.tick_since(prev_time))
+        //fmt.println(1 / ctx.timestep.frame_duration)
         prev_time = time.tick_now()
 
         // Get the alpha leftover for draw tasks
-        alpha_accumulator += timestep.frame_duration
+        ctx.timestep.accumulator += ctx.timestep.frame_duration
 
-        for alpha_accumulator >= timestep.frame_duration {
-            alpha_accumulator -= timestep.frame_duration
+        temp_accumulator := ctx.timestep.accumulator
+        for temp_accumulator >= ctx.update_fps {
+            temp_accumulator -= ctx.update_fps
         }
 
-        timestep.alpha = alpha_accumulator / timestep.frame_duration
+        ctx.timestep.alpha = temp_accumulator / ctx.update_fps
 
-        worker_pool_add_module(&worker_pool, ctx.scene.module)
+        worker_pool_init_queue(&worker_pool, ctx.scene.task_list[:])
 
-        begin(&ctx.renderer)
+        take_step(task_profiler, "Add Modules")
 
-        profile_start(task_profiler)
+        renderer_begin(&ctx.renderer)
+
+        take_step(task_profiler, "Renderer Begin")
 
         // Synchronized start
         sync.barrier_wait(&worker_pool.sync)
 
+        take_step(task_profiler, "Barrier Begin")
+
         // TODO: Asset hot-reloading
+
+        // Submit buffers to the queue as they arrive.
+        for worker_pool.sync.index != worker_pool.sync.thread_count - 1 {
+            renderer_process_queue(&ctx.renderer)
+        }
+
+        // Ensure we don't miss a buffer at the last wait
+        renderer_process_queue(&ctx.renderer)
+
+        take_step(task_profiler, "Process Tasks")
 
         // Synchronized end
         sync.barrier_wait(&worker_pool.sync)
 
-        profile_end(task_profiler)
+        take_step(task_profiler, "Barrier End")
 
-        end(&ctx.renderer)
+        renderer_end(&ctx.renderer)
+
+        take_step(task_profiler, "Renderer End")
+
+        for ctx.timestep.accumulator >= ctx.update_fps {
+            ctx.timestep.accumulator -= ctx.update_fps
+        }
 
         // Reset Temp Allocator
         free_all(context.temp_allocator)
@@ -231,6 +263,10 @@ context_run :: proc(ctx: ^Context) {
         trans_state = transform_state_new(world_get_storage(&ctx.scene.world, Transform_2D), world_get_storage(&ctx.scene.world, Transform_3D))
 
         ctx.scene.frame_count += 1
+
+        take_step(task_profiler, "End Run")
+
+        profile_end(task_profiler)
     }
 
     ctx.scene.scene_unload(ctx.scene)
@@ -240,16 +276,8 @@ context_run :: proc(ctx: ^Context) {
     // End internal stuff
     renderer_destroy(&ctx.renderer)
 
-    fmt.println("Here?")
-
     worker_pool_join(&worker_pool)
     worker_pool_destroy(&worker_pool)
-
-    for &task in ctx.task_list {
-        task_destroy(&task)
-    }
-
-    delete(ctx.task_list)
 
     // Last step: End subsystems
     SDL.Quit()
@@ -271,7 +299,9 @@ context_run :: proc(ctx: ^Context) {
     //print_profiles(&condensed_profiler)
     profiler_destroy(&condensed_profiler)
 
-    for index, &profiler in thread_profiler_pool {
+    print_profiles(thread_profiler())
+
+    for _, &profiler in thread_profiler_pool {
         profiler_destroy(&profiler)
     }
 

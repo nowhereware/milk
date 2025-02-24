@@ -1,7 +1,6 @@
 package milk
 
 import "core:fmt"
-import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:time"

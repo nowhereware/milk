@@ -1,49 +1,19 @@
 package milk
 
-import "platform"
+import pt "platform"
 import "base:runtime"
 import "core:strings"
 import SDL "vendor:sdl3"
 
-Pipeline_Graphics_New_Proc :: proc(rend: ^Renderer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> Pipeline_Internal
-Pipeline_Destroy_Proc :: proc(rend: ^Renderer_Internal, pipeline: ^Pipeline_Internal)
-
-Pipeline_Commands :: struct {
-	graphics_new: Pipeline_Graphics_New_Proc,
-	destroy: Pipeline_Destroy_Proc
-}
-
-Pipeline_Internal :: union {
-	Pipeline_Vulkan
-}
-
-pipeline_internal_graphics_new :: proc(conf: Renderer_Type, rend: ^Renderer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> (internal: Pipeline_Internal, commands: Pipeline_Commands) {
-	switch conf {
-	case .Vulkan: {
-		commands.graphics_new = pipeline_vulkan_graphics_new
-		commands.destroy = pipeline_vulkan_destroy
-	}
-	}
-
-	internal = commands.graphics_new(rend, vert, frag)
-
-	return
-}
-
-Pipeline_Type :: enum {
-	Graphics,
-	Compute
-}
-
 Pipeline_Asset :: struct {
-	type: Pipeline_Type,
-	internal: Pipeline_Internal,
-	commands: Pipeline_Commands
+	type: pt.Pipeline_Type,
+	internal: pt.Pipeline_Internal,
+	commands: pt.Pipeline_Commands
 }
 
 pipeline_graphics_new :: proc(rend: ^Renderer, vert: Shader_Asset, frag: Shader_Asset) -> (out: Pipeline_Asset) {
 	out.type = .Graphics
-	out.internal, out.commands = pipeline_internal_graphics_new(rend.type, &rend.internal, vert.internal, frag.internal)
+	out.internal, out.commands = pt.pipeline_internal_graphics_new(&rend.internal, vert.internal, frag.internal)
 
 	return
 }
@@ -88,7 +58,7 @@ pipeline_asset_load :: proc(server: ^Asset_Server, path: string) {
 	}
 
 	// Enumerate through the found shaders and create pipeline(s)
-	type: Pipeline_Type
+	type: pt.Pipeline_Type
 	outer: for suffix in suffixes_found {
 		switch suffix {
 			case .Comp: {

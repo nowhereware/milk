@@ -1,69 +1,36 @@
 package milk
 
-import "platform"
+import pt "platform"
 
 import "core:fmt"
+import "core:os"
+import "core:container/queue"
 import "core:strings"
+import "core:sync"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
-
-Renderer_Type :: enum {
-    Vulkan,
-}
-
-Renderer_New_Proc :: proc(window: ^SDL.Window, conf: ^Context_Config, viewport: Viewport) -> Renderer_Internal
-Renderer_Begin_Proc :: proc(rend: ^Renderer_Internal, window: ^SDL.Window)
-Renderer_Bind_Graphics_Pipeline_Proc :: proc(rend: ^Renderer_Internal, pipeline: ^Pipeline_Internal)
-Renderer_End_Proc :: proc(rend: ^Renderer_Internal, window: ^SDL.Window)
-Renderer_Quit_Proc :: proc(rend: ^Renderer_Internal)
-Renderer_Set_Clear_Color :: proc(rend: ^Renderer_Internal, color: Color)
-Renderer_Set_Framebuffer_Resized :: proc(rend: ^Renderer_Internal, size: UVector2)
-
-Renderer_Commands :: struct {
-    new: Renderer_New_Proc,
-    begin: Renderer_Begin_Proc,
-    bind_graphics_pipeline: Renderer_Bind_Graphics_Pipeline_Proc,
-    end: Renderer_End_Proc,
-    quit: Renderer_Quit_Proc,
-    set_clear_color: Renderer_Set_Clear_Color,
-    set_framebuffer_resized: Renderer_Set_Framebuffer_Resized
-}
-
-Renderer_Internal :: union {
-    Renderer_Vulkan
-}
-
-renderer_internal_new :: proc(window: ^SDL.Window, conf: ^Context_Config, viewport: Viewport) -> (internal: Renderer_Internal, commands: Renderer_Commands) {
-    switch conf.renderer {
-        case .Vulkan: {
-            commands.new = renderer_vulkan_new
-            commands.begin = renderer_vulkan_begin
-            commands.bind_graphics_pipeline = renderer_vulkan_bind_graphics_pipeline
-            commands.end = renderer_vulkan_end
-            commands.quit = renderer_vulkan_quit
-            commands.set_clear_color = renderer_vulkan_set_clear_color
-            commands.set_framebuffer_resized = renderer_vulkan_set_framebuffer_resized
-        }
-    }
-
-    internal = commands.new(window, conf, viewport)
-
-    return
-}
-
-// Holds the size of the current window, and a clear color.
-Viewport :: struct {
-    size: UVector2,
-    clear_color: Color,
-}
 
 Renderer :: struct {
     window: ^SDL.Window,
 
     // Renderer instance
-    type: Renderer_Type,
-    internal: Renderer_Internal,
-    commands: Renderer_Commands,
+
+    type: pt.Renderer_Type,
+    internal: pt.Renderer_Internal,
+    commands: pt.Renderer_Commands,
+
+    // Data
+
+    // A list of graphics devices exposed by the system.
+    devices: [dynamic]Graphics_Device,
+    // A map of command pools, indexed by thread id.
+    command_pools: map[int]Command_Pool,
+    // A queue of buffers that need to be submitted.
+    buffer_queue: queue.Queue(Command_Buffer),
+    // A mutex to sync access to the queue
+    buffer_mutex: sync.Mutex,
+    // The clear color of the renderer
+    clear_color: Color,
 }
 
 // Creates the Renderer.
@@ -77,7 +44,10 @@ renderer_new :: proc(conf: ^Context_Config) -> (out: Renderer) {
 
     switch conf.renderer {
         case .Vulkan: {
-            flags = flags + {.VULKAN}
+            flags = flags + { .VULKAN }
+        }
+        case .OpenGL: {
+            flags = flags + { .OPENGL }
         }
     }
 
@@ -95,21 +65,87 @@ renderer_new :: proc(conf: ^Context_Config) -> (out: Renderer) {
         return Renderer {}
     }
 
-    viewport := Viewport {
-        size = { conf.window_size.x, conf.window_size.y },
-        clear_color = color_as_percent(conf.clear_color),
-    }
-
     out.type = conf.renderer
 
-    out.internal, out.commands = renderer_internal_new(out.window, conf, viewport)
+    internal_devices: [dynamic]pt.Graphics_Device_Internal
+
+    rend_cfg := pt.Renderer_Config {
+        app_name = conf.title,
+        app_version = conf.version,
+        type = conf.renderer
+    }
+
+    out.internal, out.commands, internal_devices = pt.renderer_internal_new(out.window, &rend_cfg)
+    queue.init(&out.buffer_queue)
+    out.commands.set_clear_color(&out.internal, conf.clear_color)
+
+    // Register pool
+    pool := gfx_get_command_pool(&out)
+    out.commands.register_main_pool(&out.internal, &pool.internal)
 
     return
 }
 
 renderer_destroy :: proc(rend: ^Renderer) {
+    for _, &pool in rend.command_pools {
+        pool.commands.destroy(&pool.internal)
+    }
+    queue.destroy(&rend.buffer_queue)
+    delete(rend.command_pools)
+
     rend.commands.quit(&rend.internal)
     SDL.DestroyWindow(rend.window)
+
+    for &device in rend.devices {
+        graphics_device_destroy(&device)
+    }
+    delete(rend.devices)
+}
+
+renderer_process_queue :: proc(rend: ^Renderer) {
+    for queue.len(rend.buffer_queue) != 0 {
+        buffer := queue.pop_back(&rend.buffer_queue)
+        rend.commands.submit_buffer(&rend.internal, buffer.internal)
+    }
+}
+
+renderer_set_clear_color :: proc(rend: ^Renderer, color: Color) {
+    rend.clear_color = color
+}
+
+gfx_get_command_pool :: proc(rend: ^Renderer) -> ^Command_Pool {
+    thread_id := os.current_thread_id()
+
+    if thread_id not_in rend.command_pools {
+        rend.command_pools[thread_id] = command_pool_new(rend)
+    }
+
+    return &rend.command_pools[thread_id]
+}
+
+gfx_get_command_buffer :: proc(rend: ^Renderer) -> Command_Buffer {
+    pool := gfx_get_command_pool(rend)
+    return command_pool_acquire(rend, pool)
+}
+
+gfx_submit_buffer :: proc(rend: ^Renderer, buffer: Command_Buffer) {
+    // End the buffer
+    buffer.commands.end(buffer.internal)
+    // Acquire a lock on the buffer queue and push the buffer to the queue
+    sync.lock(&rend.buffer_mutex)
+    queue.push(&rend.buffer_queue, buffer)
+    sync.unlock(&rend.buffer_mutex)
+}
+
+gfx_get_swapchain_texture :: proc(rend: ^Renderer) -> pt.Texture_Internal {
+    return rend.commands.get_swapchain_texture(&rend.internal)
+}
+
+gfx_begin_draw :: proc(
+    rend: ^Renderer,
+    buffer: Command_Buffer,
+) {
+    buffer.commands.begin_draw(&rend.internal, buffer.internal)
 }
 
 
@@ -118,22 +154,20 @@ renderer_destroy :: proc(rend: ^Renderer) {
 
 
 
-set_clear_color :: proc(rend: ^Renderer, color: Color) {
-    rend.commands.set_clear_color(&rend.internal, color)
-}
-
 renderer_window_resized :: proc(rend: ^Renderer, size: UVector2) {
     rend.commands.set_framebuffer_resized(&rend.internal, size)
 }
 
-begin :: proc(rend: ^Renderer) {
-    rend.commands.begin(&rend.internal, rend.window)
+renderer_begin :: proc(rend: ^Renderer) {
+    rend.commands.begin(
+        &rend.internal
+    )
 }
 
-bind_graphics_pipeline :: proc(rend: ^Renderer, pipeline: ^Pipeline_Asset) {
+renderer_bind_graphics_pipeline :: proc(rend: ^Renderer, pipeline: ^Pipeline_Asset) {
     rend.commands.bind_graphics_pipeline(&rend.internal, &pipeline.internal)
 }
 
-end :: proc(rend: ^Renderer) {
+renderer_end :: proc(rend: ^Renderer) {
     rend.commands.end(&rend.internal, rend.window)
 }

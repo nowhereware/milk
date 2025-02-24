@@ -11,14 +11,19 @@ import "core:time"
 // Stores all the data we need for a fixed timestep loop within each worker thread
 // The timestep is centralized within the context, each loop needs its own accumulator
 Timestep :: struct {
+    // The length between the last frame and now
     frame_duration: f64,
+    // An accumulation of frame time as well as any leftover bits that add up
+    accumulator: f64,
+    // A half-step between each real frame for interpolated rendering
     alpha: f64,
 }
 
 timestep_new :: proc(prev_time: time.Tick) -> Timestep {
     return Timestep {
         frame_duration = time.duration_seconds(time.tick_since(prev_time)),
-        alpha = 0.0
+        accumulator = 0.0,
+        alpha = 0.0,
     }
 }
 
@@ -31,14 +36,13 @@ Worker_Pool :: struct {
     num_waiting: int,
     num_in_processing: int,
     num_outstanding: int,
-    num_done: int,
 
     is_running: bool,
 
     threads: []^thread.Thread,
 
     tasks: queue.Queue(Task),
-    tasks_done: [dynamic]Task,
+    tasks_done: map[typeid]struct {},
 
     // Sync
     sync: sync.Barrier,
@@ -48,7 +52,7 @@ worker_pool_new :: proc(pool: ^Worker_Pool, allocator: mem.Allocator, thread_cou
     context.allocator = allocator
     pool.allocator = allocator
     queue.init(&pool.tasks)
-    pool.tasks_done = make([dynamic]Task)
+    pool.tasks_done = {}
     pool.threads = make([]^thread.Thread, max(thread_count, 1))
 
     pool.is_running = true
@@ -66,9 +70,9 @@ worker_pool_new :: proc(pool: ^Worker_Pool, allocator: mem.Allocator, thread_cou
 }
 
 worker_pool_destroy :: proc(pool: ^Worker_Pool) {
+    queue.clear(&pool.tasks)
     queue.destroy(&pool.tasks)
     delete(pool.tasks_done)
-    queue.clear(&pool.tasks)
 
     for &t in pool.threads {
         data := cast(^Worker_Thread_Data)t.data
@@ -114,20 +118,10 @@ worker_pool_join :: proc(pool: ^Worker_Pool) {
     }
 }
 
-worker_pool_add_task :: proc(pool: ^Worker_Pool, procedure: Task) {
+worker_pool_init_queue :: proc(pool: ^Worker_Pool, task_list: []Task) {
     sync.guard(&pool.mutex)
 
-    queue.push_back(&pool.tasks, procedure)
-    sync.atomic_add(&pool.num_waiting, 1)
-    sync.atomic_add(&pool.num_outstanding, 1)
-}
-
-worker_pool_add_module :: proc(pool: ^Worker_Pool, module: Module) {
-    sync.guard(&pool.mutex)
-
-    queue.push_back_elems(&pool.tasks, ..module.tasks[:])
-    sync.atomic_add(&pool.num_waiting, len(module.tasks))
-    sync.atomic_add(&pool.num_outstanding, len(module.tasks))
+    queue.init_with_contents(&pool.tasks, task_list)
 }
 
 worker_pool_shutdown :: proc(pool: ^Worker_Pool, exit_code: int = 1) {
@@ -139,8 +133,7 @@ worker_pool_shutdown :: proc(pool: ^Worker_Pool, exit_code: int = 1) {
 
         data := cast(^Worker_Thread_Data)t.data
         if data.task.systems != nil {
-            append(&pool.tasks_done, data.task)
-            sync.atomic_add(&pool.num_done, 1)
+            pool.tasks_done[data.task.name] = {}
             sync.atomic_sub(&pool.num_outstanding, 1)
             sync.atomic_sub(&pool.num_in_processing, 1)
         }
@@ -160,23 +153,10 @@ worker_pool_pop_waiting :: proc(pool: ^Worker_Pool) -> (task: Task, ok: bool) {
     return
 }
 
-worker_pool_pop_done :: proc(pool: ^Worker_Pool) -> (task: Task, ok: bool) {
-    sync.guard(&pool.mutex)
-
-    if len(pool.tasks_done) != 0 {
-        task = pop_front(&pool.tasks_done)
-        ok = true
-        sync.atomic_sub(&pool.num_done, 1)
-    }
-
-    return
-}
-
 worker_pool_clear_done :: proc(pool: ^Worker_Pool) {
     sync.guard(&pool.mutex)
 
     if len(pool.tasks_done) != 0 {
-        sync.atomic_sub(&pool.num_done, len(pool.tasks_done))
         clear(&pool.tasks_done)
     }
 }
@@ -185,8 +165,6 @@ Worker_Thread_Data :: struct {
     // Data for the thread
     // Naturally, we need the Context and the ecs.World of the context
     ctx: ^Context,
-    // The timestep data for our fixed timestep loop.
-    timestep: ^Timestep,
     // The prior transform data of a World, used for draw calls.
     transform_state: ^Transform_State,
     // The task we run
@@ -208,27 +186,40 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
     outer: for sync.atomic_load(&pool.is_running) {
         sync.barrier_wait(&pool.sync)
 
-        for task, ok := worker_pool_pop_waiting(pool); ok; task, ok = worker_pool_pop_waiting(pool) {
+        inner: for task, ok := worker_pool_pop_waiting(pool); ok; task, ok = worker_pool_pop_waiting(pool) {
             // Run the task
-            accumulator += d.timestep.frame_duration
+            accumulator = d.ctx.timestep.accumulator
+
+            if len(task.dependencies) != 0 {
+                for dep in task.dependencies {
+                    if dep not_in pool.tasks_done {
+                        // A dependency is not done yet, push this task back onto the queue and move on.
+                        sync.lock(&pool.mutex)
+                        queue.push_back(&pool.tasks, task)
+                        sync.unlock(&pool.mutex)
+                        continue inner
+                    }
+                }
+            }
 
             if task.type == .Update {
-                for accumulator > d.ctx.update_fps {
-                    task_run(&task, d.ctx, d.ctx.update_fps, d.transform_state)
+                for accumulator >= d.ctx.update_fps {
+                    task_run(&task, d.ctx, d.transform_state)
                     accumulator -= d.ctx.update_fps
                 }
             } else {
                 // We're drawing, run immediately
-                task_run(&task, d.ctx, d.ctx.update_fps, d.transform_state)
+                task_run(&task, d.ctx, d.transform_state)
             }
 
-            append(&pool.tasks_done, task)
-            sync.atomic_add(&pool.num_done, 1)
+            pool.tasks_done[task.name] = {}
             sync.atomic_sub(&pool.num_outstanding, 1)
             sync.atomic_sub(&pool.num_in_processing, 1)
 
             sync.guard(&pool.mutex)
         }
+
+        // Out of tasks, submit command pool.
 
         // Free temp allocations
         free_all(context.temp_allocator)

@@ -1,5 +1,6 @@
-package milk_gfx_platform
+package milk_platform
 
+import odin_queue "core:container/queue"
 import "core:fmt"
 import "core:mem"
 import "core:strings"
@@ -13,142 +14,52 @@ when ODIN_DEBUG {
     ENABLE_LAYERS :: false
 }
 
-FRAME_COUNT :: 2
-MAX_DESCRIPTOR_SETS :: 10
-MAX_DESCRIPTOR_COUNT :: 65536
-
-@(private="file")
-alloc_counter: u32 = 0
-
-Vulkan_Graphics_Device :: struct {
-    device: vk.PhysicalDevice,
-    queue_family_properties: [dynamic]vk.QueueFamilyProperties,
-    extension_properties: [dynamic]vk.ExtensionProperties,
-    surface_capabilities: vk.SurfaceCapabilities2KHR,
-    surface_formats: [dynamic]vk.SurfaceFormat2KHR,
-    present_modes: [dynamic]vk.PresentModeKHR,
-    mem_properties: vk.PhysicalDeviceMemoryProperties,
-    device_properties: vk.PhysicalDeviceProperties,
+Vk_Features :: struct {
+    features_10: vk.PhysicalDeviceFeatures2,
+    features_11: vk.PhysicalDeviceVulkan11Features,
+    features_12: vk.PhysicalDeviceVulkan12Features,
+    features_13: vk.PhysicalDeviceVulkan13Features,
+    features_14: vk.PhysicalDeviceVulkan14Features,
 }
 
-Vulkan_Frame_Resources :: struct {
-    acquire_semaphore: vk.Semaphore,
-    render_complete_semaphore: vk.Semaphore,
-    render_fence: vk.Fence,
-}
-
-Vulkan_Frame_Data :: struct {
-    // Multithreaded: Because we have many worker threads, we store each pool & buffer as a map pointing from the thread id to the
-    // pool/buffer
-    command_pool: map[int]vk.CommandPool,
-    command_buffer: map[int]vk.CommandBuffer,
-}
-
-Vulkan_Image_Type :: enum {
-    Swap,
-    Depth,
-}
-
-Vulkan_Filter_Type :: enum {
-    Linear,
-    Nearest,
-}
-
-Vulkan_Repeat_Type :: enum {
-    Repeat,
-    Clamp_To_Edge,
-    Clamp_To_Border_Clear,
-    Clamp_To_Border_Black,
-}
-
-Vulkan_Buffer :: struct {
-    buffer: vk.Buffer,
-    allocation: vma.Allocation,
-    address: vk.DeviceAddress,
-}
-
-Vulkan_Image :: struct {
-    image: vk.Image,
-    type: Vulkan_Image_Type,
-    allocation: vma.Allocation,
-}
-
-Vulkan_Image_Resource :: struct {
-    using vk_image: Vulkan_Image,
-    view: vk.ImageView,
-    extent: vk.Extent2D,
-    layout: vk.ImageLayout,
-}
-
-Vulkan_Swap_Image :: struct {
-    image: vk.Image,
-    view: vk.ImageView,
-}
-
-Vulkan_SwapChain :: struct {
-    graphics_device: ^Vulkan_Graphics_Device,
-    device: vk.Device,
-    present_queue: ^Vulkan_Queue_Info,
-    graphics_queue: ^Vulkan_Queue_Info,
-    surface: vk.SurfaceKHR,
-    swapchain: vk.SwapchainKHR,
-    image_format: vk.Format,
-    command_pool: vk.CommandPool,
-
-    next_images: [dynamic]Vulkan_Swap_Image,
-    frame_resources: [dynamic]Vulkan_Frame_Resources,
-    current_frame: u32,
-    next_image_index: u32,
-    need_rebuild: bool,
-    max_frames_in_flight: u32,
-}
-
-Vulkan_Queue_Info :: struct {
+Vk_Queue :: struct {
     family_index: u32,
-    queue_index: u32,
     queue: vk.Queue,
 }
 
-Vulkan_Resource_Allocator :: struct {
-    allocator: vma.Allocator,
-    device: vk.Device,
-    staging_buffers: [dynamic]Vulkan_Buffer,
-    leak_id: u32,
+Vk_Color_Space :: enum {
+    SRGB_LINEAR,
+    SRGB_NONLINEAR,
 }
 
-Vulkan_Sampler_Pool :: struct {
-    device: vk.Device,
-    sampler_map: map[string]vk.Sampler,
+Vk_Viewport :: struct {
+    position: Vector2,
+    size: Vector2,
+    depth: Vector2,
 }
 
-Vulkan_G_Buffer_Info :: struct {
-    device: vk.Device,
-    alloc: ^Vulkan_Resource_Allocator,
-    size: vk.Extent2D,
-    color_formats: [dynamic]vk.Format,
-    depth_format: vk.Format,
-    linear_sampler: vk.Sampler,
-    sample_count: vk.SampleCountFlags,
+Vk_Scissor_Rect :: struct {
+    position: UVector2,
+    size: UVector2,
 }
 
-Vulkan_G_Buffer :: struct {
-    color_attachments: [dynamic]Vulkan_Image,
-    depth_attachment: Vulkan_Image,
-    depth_view: vk.ImageView,
-    descriptors: [dynamic]vk.DescriptorImageInfo,
-    ui_views: [dynamic]vk.ImageView,
-    info: Vulkan_G_Buffer_Info,
-    ui_descriptor_sets: [dynamic]vk.DescriptorSet,
+Vk_Compare_Op :: enum {
+    Never,
+    Less,
+    Equal,
+    Less_Equal,
+    Greater,
+    Not_Equal,
+    Greater_Equal,
+    Always_Pass,
 }
 
-vulkan_graphics_device_destroy :: proc(device: ^Vulkan_Graphics_Device) {
-    delete(device.queue_family_properties)
-    delete(device.extension_properties)
-    delete(device.surface_formats)
-    delete(device.present_modes)
+Vk_Depth_State :: struct {
+    compare_op: Vk_Compare_Op,
+    is_depth_write_enabled: bool,
 }
 
-vulkan_create_instance :: proc(app_info: ^vk.ApplicationInfo, window: ^SDL.Window) -> (layers: [dynamic]cstring, instance: vk.Instance) {
+vk_create_instance :: proc(rend: ^Vk_Renderer, app_info: ^vk.ApplicationInfo) {
     inst_create_info := vk.InstanceCreateInfo {
         sType = .INSTANCE_CREATE_INFO,
         pApplicationInfo = app_info,
@@ -158,7 +69,7 @@ vulkan_create_instance :: proc(app_info: ^vk.ApplicationInfo, window: ^SDL.Windo
     vk.load_proc_addresses_global(cast(rawptr)SDL.Vulkan_GetVkGetInstanceProcAddr())
     assert(vk.CreateInstance != nil)
 
-    instance_extensions := vulkan_get_available_instance_extensions()
+    instance_extensions := vk_get_available_instance_extensions()
 
     // Get desired SDL instance extensions
     inst_ext_count: u32 = 0
@@ -167,32 +78,32 @@ vulkan_create_instance :: proc(app_info: ^vk.ApplicationInfo, window: ^SDL.Windo
     inst_ext_names := make([dynamic]cstring)
 
     for i in 0..<inst_ext_count {
-        vulkan_request_extension(&inst_ext_names, sdl_exts[i], instance_extensions, true)
+        vk_request_extension(&inst_ext_names, sdl_exts[i], instance_extensions, true)
     }
 
     // Additional surface extensions
-    vulkan_request_extension(&inst_ext_names, vk.EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME, instance_extensions)
-    vulkan_request_extension(&inst_ext_names, vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, instance_extensions)
+    vk_request_extension(&inst_ext_names, vk.EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME, instance_extensions)
+    vk_request_extension(&inst_ext_names, vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, instance_extensions)
 
-    layers = make([dynamic]cstring)
+    rend.validation_layers = make([dynamic]cstring)
 
     if ENABLE_LAYERS {
-        vulkan_request_extension(&inst_ext_names, vk.EXT_DEBUG_UTILS_EXTENSION_NAME, instance_extensions)
+        vk_request_extension(&inst_ext_names, vk.EXT_DEBUG_UTILS_EXTENSION_NAME, instance_extensions)
 
-        layer_props := vulkan_get_available_layers()
-        vulkan_request_layer(&layers, "VK_LAYER_KHRONOS_validation", layer_props, true)
+        layer_props := vk_get_available_layers()
+        vk_request_layer(&rend.validation_layers, "VK_LAYER_KHRONOS_validation", layer_props, true)
 
         delete(layer_props)
     }
 
     inst_create_info.enabledExtensionCount = cast(u32)len(inst_ext_names)
     inst_create_info.ppEnabledExtensionNames = raw_data(inst_ext_names)
-    inst_create_info.enabledLayerCount = cast(u32)len(layers)
-    inst_create_info.ppEnabledLayerNames = raw_data(layers)
+    inst_create_info.enabledLayerCount = cast(u32)len(rend.validation_layers)
+    inst_create_info.ppEnabledLayerNames = raw_data(rend.validation_layers)
 
-    vkcheck(vk.CreateInstance(&inst_create_info, nil, &instance))
+    vkcheck(vk.CreateInstance(&inst_create_info, nil, &rend.instance))
 
-    vk.load_proc_addresses_instance(instance)
+    vk.load_proc_addresses_instance(rend.instance)
 
     delete(inst_ext_names)
     delete(instance_extensions)
@@ -200,886 +111,516 @@ vulkan_create_instance :: proc(app_info: ^vk.ApplicationInfo, window: ^SDL.Windo
     return
 }
 
-vulkan_create_surface :: proc(instance: vk.Instance, surface: ^vk.SurfaceKHR, window: ^SDL.Window) {
-    SDL.Vulkan_CreateSurface(window, instance, nil, surface)
+vk_create_surface :: proc(rend: ^Vk_Renderer, window: ^SDL.Window) {
+    SDL.Vulkan_CreateSurface(window, rend.instance, nil, &rend.surface)
 }
 
-vulkan_enumerate_physical_devices :: proc(instance: vk.Instance, surface: vk.SurfaceKHR) -> (devices: [dynamic]Vulkan_Graphics_Device) {
-    num_devices: u32 = 0
-    vkcheck(vk.EnumeratePhysicalDevices(instance, &num_devices, nil))
-    device_list: [dynamic]vk.PhysicalDevice = make([dynamic]vk.PhysicalDevice, num_devices)
-    vkcheck(vk.EnumeratePhysicalDevices(instance, &num_devices, raw_data(device_list)))
-
-    devices = make([dynamic]Vulkan_Graphics_Device, num_devices)
-
-    // Select the desired device
-    for i := 0; i < len(device_list); i += 1 {
-        gpu := devices[i]
-        gpu.device = device_list[i]
-
-        {
-            // Get queues from device
-            num_queues: u32 = 0
-            vk.GetPhysicalDeviceQueueFamilyProperties(gpu.device, &num_queues, nil)
-            gpu.queue_family_properties = make([dynamic]vk.QueueFamilyProperties, num_queues)
-            vk.GetPhysicalDeviceQueueFamilyProperties(gpu.device, &num_queues, raw_data(gpu.queue_family_properties))
+vk_has_extension :: proc(exts: [dynamic]vk.ExtensionProperties, name: cstring) -> bool {
+    search := strings.clone_from_cstring(name, context.temp_allocator)
+    for &ext in exts {
+        ext_name := strings.clone_from_bytes(ext.extensionName[:], context.temp_allocator)
+        if strings.contains(ext_name, search) {
+            return true
         }
-
-        {
-            // Get extensions supported by device
-            num_extensions: u32 = 0
-            vk.EnumerateDeviceExtensionProperties(gpu.device, nil, &num_extensions, nil)
-            gpu.extension_properties = make([dynamic]vk.ExtensionProperties, num_extensions)
-            vk.EnumerateDeviceExtensionProperties(gpu.device, nil, &num_extensions, raw_data(gpu.extension_properties))
-        }
-
-        // Get surface capabilities
-        surface_info := vk.PhysicalDeviceSurfaceInfo2KHR {
-            sType = .PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
-            surface = surface
-        }
-
-        gpu.surface_capabilities.sType = .SURFACE_CAPABILITIES_2_KHR
-        vkcheck(vk.GetPhysicalDeviceSurfaceCapabilities2KHR(gpu.device, &surface_info, &gpu.surface_capabilities))
-
-        {
-            // Get supported surface formats
-            num_formats: u32 = 0
-            vk.GetPhysicalDeviceSurfaceFormats2KHR(gpu.device, &surface_info, &num_formats, nil)
-            gpu.surface_formats = make([dynamic]vk.SurfaceFormat2KHR, num_formats)
-
-            for &format in gpu.surface_formats {
-                format.sType = .SURFACE_FORMAT_2_KHR
-            }
-
-            vk.GetPhysicalDeviceSurfaceFormats2KHR(gpu.device, &surface_info, &num_formats, raw_data(gpu.surface_formats))
-        }
-
-        {
-            // Get supported present modes
-            num_present_modes: u32 = 0
-            vk.GetPhysicalDeviceSurfacePresentModesKHR(gpu.device, surface, &num_present_modes, nil)
-            gpu.present_modes = make([dynamic]vk.PresentModeKHR, num_present_modes)
-            vk.GetPhysicalDeviceSurfacePresentModesKHR(gpu.device, surface, &num_present_modes, raw_data(gpu.present_modes))
-        }
-
-        // Get memory types supported by device
-        vk.GetPhysicalDeviceMemoryProperties(gpu.device, &gpu.mem_properties)
-
-        // Get actual device properties
-        vk.GetPhysicalDeviceProperties(gpu.device, &gpu.device_properties)
-
-        devices[i] = gpu
     }
-
-    delete(device_list)
-
-    return
+    return false
 }
 
-vulkan_select_physical_device :: proc(devices: [dynamic]Vulkan_Graphics_Device, surface: vk.SurfaceKHR) -> (
-    device_extensions: [dynamic]cstring,
-    graphics_queue: Vulkan_Queue_Info,
-    present_queue: Vulkan_Queue_Info,
-    physical_device: vk.PhysicalDevice,
-    graphics_device: ^Vulkan_Graphics_Device,
-) {
-    device_extensions = make([dynamic]cstring)
-    append(&device_extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
-    append(&device_extensions, vk.EXT_SHADER_OBJECT_EXTENSION_NAME)
-
-    for &gpu, index in devices {
-        graphics_idx := -1
-        present_idx := -1
-
-        // Ensure physical device supports our desired device extensions.
-        if !vulkan_check_phys_device_ext_support(gpu, device_extensions) {
-            fmt.println("Extension support not matched!")
-            continue
-        }
-
-        // Ensure we actually have surface formats and present modes
-        if len(gpu.surface_formats) == 0 || len(gpu.present_modes) == 0 {
-            continue
-        }
-
-        // Loop through queue family properties looking for both a graphics and present queue
-        // Index could end up being the same, but it's not guaranteed.
-
-        // Find graphics queue family
-        for &prop, index in gpu.queue_family_properties {
-            if prop.queueCount == 0 {
-                continue
-            }
-
-            if prop.queueFlags >= { .GRAPHICS } {
-                graphics_idx = index
-                break
-            }
-        }
-
-        // Find present family
-        for &prop, index in gpu.queue_family_properties {
-            if prop.queueCount == 0 {
-                continue
-            }
-
-            supports_present: b32 = false
-            vk.GetPhysicalDeviceSurfaceSupportKHR(gpu.device, cast(u32)index, surface, &supports_present)
-            if supports_present {
-                present_idx = index
-                break
-            }
-        }
-
-        // If we found a device supporting both graphics and present, it's valid
-        if graphics_idx >= 0 && present_idx >= 0 {
-            graphics_queue.family_index = u32(graphics_idx)
-            present_queue.family_index = u32(present_idx)
-            physical_device = gpu.device
-            device_name := strings.clone_from_bytes(gpu.device_properties.deviceName[:], context.temp_allocator)
-            fmt.println("Selected GPU:", device_name)
-            graphics_device = &gpu
-            return
-        }
+vk_add_optional_extension :: proc(exts: [dynamic]vk.ExtensionProperties, name: cstring, names: ^[dynamic]cstring, create_info: ^rawptr = nil, features: rawptr = nil) -> bool {
+    if !vk_has_extension(exts, name) {
+        return false
     }
 
-    // We can't render or present :(
-    panic("Could not find a physical device!")
+    append(names, name)
+
+    if create_info != nil && features != nil {
+        feats := cast(^vk.BaseOutStructure)features
+        feats.pNext = cast(^vk.BaseOutStructure)create_info^
+        create_info^ = features
+    }
+    return true
 }
 
-vulkan_create_logical_device_and_queues :: proc(
-    extensions: [dynamic]cstring, 
-    graphics_queue: ^Vulkan_Queue_Info, 
-    present_queue: ^Vulkan_Queue_Info, 
-    layers: [dynamic]cstring,
-    physical_device: vk.PhysicalDevice,
-    instance: vk.Instance,
-) -> (
-    device: vk.Device,
-) {
-    // Add each family index to a list
-    unique_idx := make([dynamic]u32)
-    append(&unique_idx, graphics_queue.family_index)
-    if graphics_queue.family_index != present_queue.family_index {
-        append(&unique_idx, present_queue.family_index)
-    }
-
-    dev_queue_info := make([dynamic]vk.DeviceQueueCreateInfo)
-
-    priority: f32 = 1.0
-    for id in unique_idx {
-        qinfo := vk.DeviceQueueCreateInfo {
+vk_create_device :: proc(rend: ^Vk_Renderer) {
+    // Create queues
+    rend.graphics_queue.family_index = cast(u32)vk_find_queue_family_index(rend.graphics_device.device, { .GRAPHICS })
+    rend.compute_queue.family_index = cast(u32)vk_find_queue_family_index(rend.graphics_device.device, { .COMPUTE })
+    queue_priority: f32 = 1.0
+    ci_queue := [2]vk.DeviceQueueCreateInfo {
+        {
             sType = .DEVICE_QUEUE_CREATE_INFO,
-            queueFamilyIndex = id,
+            queueFamilyIndex = rend.graphics_queue.family_index,
             queueCount = 1,
+            pQueuePriorities = &queue_priority
+        },
+        {
+            sType = .DEVICE_QUEUE_CREATE_INFO,
+            queueFamilyIndex = rend.compute_queue.family_index,
+            queueCount = 1,
+            pQueuePriorities = &queue_priority,
         }
-
-        qinfo.pQueuePriorities = &priority
-        append(&dev_queue_info, qinfo)
     }
 
-    // Enable physical device features
-    device_features := vk.PhysicalDeviceFeatures {
-        depthClamp = true,
-        depthBounds = true,
-        fillModeNonSolid = true,
-    }
+    num_queues: u32 = rend.graphics_queue.family_index == rend.compute_queue.family_index ? 1 : 2
 
-    extended_dynamic_state_3_feature := vk.PhysicalDeviceExtendedDynamicState3FeaturesEXT {
-        sType = .PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
-        pNext = nil,
+    // Create features
+    features := rend.graphics_device.features
+    device_features_10 := vk.PhysicalDeviceFeatures {
+        geometryShader = features.features_10.features.geometryShader,
+        tessellationShader = features.features_10.features.tessellationShader,
+        sampleRateShading = true,
+        multiDrawIndirect = true,
+        drawIndirectFirstInstance = true,
+        depthBiasClamp = true,
+        fillModeNonSolid = features.features_10.features.fillModeNonSolid,
+        samplerAnisotropy = true,
+        textureCompressionBC = features.features_10.features.textureCompressionBC,
+        vertexPipelineStoresAndAtomics = features.features_10.features.vertexPipelineStoresAndAtomics,
+        fragmentStoresAndAtomics = true,
+        shaderImageGatherExtended = true,
+        shaderInt64 = features.features_10.features.shaderInt64,
     }
-
-    extended_dynamic_state_2_feature := vk.PhysicalDeviceExtendedDynamicState2FeaturesEXT {
-        sType = .PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT,
-        pNext = &extended_dynamic_state_3_feature,
-        extendedDynamicState2 = true,
-    }
-
-    extended_dynamic_state_feature := vk.PhysicalDeviceExtendedDynamicStateFeaturesEXT {
-        sType = .PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
-        pNext = &extended_dynamic_state_2_feature,
-        extendedDynamicState = true
-    }
-
-    shader_object_feature := vk.PhysicalDeviceShaderObjectFeaturesEXT {
-        sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-        pNext = &extended_dynamic_state_feature,
-        shaderObject = true,
-    }
-
     device_features_11 := vk.PhysicalDeviceVulkan11Features {
         sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        pNext = &shader_object_feature,
+        pNext = nil,
+        storageBuffer16BitAccess = true,
+        samplerYcbcrConversion = features.features_11.samplerYcbcrConversion,
+        shaderDrawParameters = true,
     }
-
     device_features_12 := vk.PhysicalDeviceVulkan12Features {
         sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        pNext = &device_features_11,
+        drawIndirectCount = features.features_12.drawIndirectCount,
+        storageBuffer8BitAccess = features.features_12.storageBuffer8BitAccess,
+        uniformAndStorageBuffer8BitAccess = features.features_12.uniformAndStorageBuffer8BitAccess,
+        shaderFloat16 = features.features_12.shaderFloat16,
         descriptorIndexing = true,
         shaderSampledImageArrayNonUniformIndexing = true,
         descriptorBindingSampledImageUpdateAfterBind = true,
-        shaderUniformBufferArrayNonUniformIndexing = true,
-        descriptorBindingUniformBufferUpdateAfterBind = true,
-        shaderStorageBufferArrayNonUniformIndexing = true,
-        descriptorBindingStorageBufferUpdateAfterBind = true,
-        vulkanMemoryModel = true,
+        descriptorBindingStorageImageUpdateAfterBind = true,
+        descriptorBindingUpdateUnusedWhilePending = true,
+        descriptorBindingPartiallyBound = true,
+        descriptorBindingVariableDescriptorCount = true,
         runtimeDescriptorArray = true,
+        scalarBlockLayout = true,
+        uniformBufferStandardLayout = true,
+        hostQueryReset = features.features_12.hostQueryReset,
         timelineSemaphore = true,
         bufferDeviceAddress = true,
-        pNext = &device_features_11,
+        vulkanMemoryModel = features.features_12.vulkanMemoryModel,
+        vulkanMemoryModelDeviceScope = features.features_12.vulkanMemoryModelDeviceScope,
     }
-
     device_features_13 := vk.PhysicalDeviceVulkan13Features {
         sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        pNext = &device_features_12,
+        subgroupSizeControl = true,
         synchronization2 = true,
         dynamicRendering = true,
-        pNext = &device_features_12,
+        maintenance4 = true,
     }
 
-    device_features_14 := vk.PhysicalDeviceVulkan14Features {
-        sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
-        pushDescriptor = true,
-        maintenance5 = true,
-        maintenance6 = true,
-        pNext = &device_features_13,
+    create_info_next: rawptr = &device_features_13
+
+    // Create optional extensions
+    device_extension_names := make([dynamic]cstring)
+    append(&device_extension_names, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
+
+    accel_structure_features := vk.PhysicalDeviceAccelerationStructureFeaturesKHR {
+        sType = .PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+        accelerationStructure = true,
+        accelerationStructureCaptureReplay = false,
+        accelerationStructureIndirectBuild = false,
+        accelerationStructureHostCommands = false,
+        descriptorBindingAccelerationStructureUpdateAfterBind = true,
     }
 
-    device_create_info := vk.DeviceCreateInfo {
+    ray_tracing_features := vk.PhysicalDeviceRayTracingPipelineFeaturesKHR {
+        sType = .PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+        rayTracingPipeline = true,
+        rayTracingPipelineShaderGroupHandleCaptureReplay = false,
+        rayTracingPipelineShaderGroupHandleCaptureReplayMixed = false,
+        rayTracingPipelineTraceRaysIndirect = true,
+        rayTraversalPrimitiveCulling = false,
+    }
+
+    ray_query_features := vk.PhysicalDeviceRayQueryFeaturesKHR {
+        sType = .PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+        rayQuery = true,
+    }
+
+    index_type_uint8_features := vk.PhysicalDeviceIndexTypeUint8Features {
+        sType = .PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES,
+        indexTypeUint8 = true,
+    }
+
+    vk_add_optional_extension(
+        rend.graphics_device.extensions, 
+        vk.KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, 
+        &device_extension_names, 
+        &create_info_next, 
+        &accel_structure_features
+    )
+
+    vk_add_optional_extension(
+        rend.graphics_device.extensions,
+        vk.KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+        &device_extension_names,
+    )
+
+    vk_add_optional_extension(
+        rend.graphics_device.extensions,
+        vk.KHR_RAY_QUERY_EXTENSION_NAME,
+        &device_extension_names,
+        &create_info_next,
+        &ray_query_features
+    )
+
+    vk_add_optional_extension(
+        rend.graphics_device.extensions,
+        vk.KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+        &device_extension_names,
+        &create_info_next,
+        &ray_tracing_features,
+    )
+
+    vk_add_optional_extension(
+        rend.graphics_device.extensions,
+        vk.EXT_INDEX_TYPE_UINT8_EXTENSION_NAME,
+        &device_extension_names,
+        &create_info_next,
+        &index_type_uint8_features,
+    )
+
+    for name in device_extension_names {
+        fmt.println(name)
+    }
+
+    info := vk.DeviceCreateInfo {
         sType = .DEVICE_CREATE_INFO,
-        queueCreateInfoCount = cast(u32)len(dev_queue_info),
-        pQueueCreateInfos = raw_data(dev_queue_info),
-        pEnabledFeatures = &device_features,
-        pNext = &device_features_14,
-        enabledExtensionCount = cast(u32)len(extensions),
-        ppEnabledExtensionNames = raw_data(extensions),
+        pNext = create_info_next,
+        queueCreateInfoCount = num_queues,
+        pQueueCreateInfos = raw_data(ci_queue[:]),
+        enabledExtensionCount = cast(u32)len(device_extension_names),
+        ppEnabledExtensionNames = raw_data(device_extension_names),
+        pEnabledFeatures = &device_features_10,
     }
+    vkcheck(vk.CreateDevice(rend.graphics_device.device, &info, nil, &rend.device))
 
-    if ENABLE_LAYERS {
-        device_create_info.enabledLayerCount = cast(u32)len(layers)
-        device_create_info.ppEnabledLayerNames = raw_data(layers)
-    } else {
-        device_create_info.enabledLayerCount = 0
-    }
+    vk.load_proc_addresses_device(rend.device)
 
-    vkcheck(vk.CreateDevice(physical_device, &device_create_info, nil, &device))
+    vk.GetDeviceQueue(rend.device, rend.graphics_queue.family_index, 0, &rend.graphics_queue.queue)
+    vk.GetDeviceQueue(rend.device, rend.compute_queue.family_index, 0, &rend.compute_queue.queue)
 
-    vk.load_proc_addresses_device(device)
+    delete(device_extension_names)
+}
 
-    vk.GetDeviceQueue(device, graphics_queue.family_index, 0, &graphics_queue.queue)
-    vk.GetDeviceQueue(device, present_queue.family_index, 0, &present_queue.queue)
+Handle_Id :: u64
 
-    delete(unique_idx)
-    delete(dev_queue_info)
+Vk_Handle :: struct($T: typeid) {
+    id: Handle_Id
+}
 
+Vk_Pool :: struct($T: typeid) {
+    data: [dynamic]T,
+    id_map: map[Handle_Id]int,
+    index_map: [dynamic]Handle_Id,
+    available_ids: odin_queue.Queue(Handle_Id),
+    id_count: u64
+}
+
+vk_pool_new :: proc($T: typeid) -> (out: Vk_Pool(T)) {
+    out.data = make([dynamic]T)
+    out.id_map = {}
+    odin_queue.init(&out.available_ids)
+    odin_queue.push(&out.available_ids, 0)
     return
 }
 
-vulkan_create_transient_command_pool :: proc(queue: ^Vulkan_Queue_Info, device: vk.Device) -> (out: vk.CommandPool) {
-    info := vk.CommandPoolCreateInfo {
-        sType = .COMMAND_POOL_CREATE_INFO,
-        flags = { .TRANSIENT },
-        queueFamilyIndex = queue.family_index
+vk_pool_get_new_id :: proc(pool: ^Vk_Pool($T)) -> Handle_Id {
+    out := odin_queue.pop_back(&pool.available_ids)
+    if out == pool.id_count {
+        // Possibly ran out of recycled ids, add a new id to the queue
+        pool.id_count += 1
+        odin_queue.push(&pool.available_ids, pool.id_count)
     }
-    vkcheck(vk.CreateCommandPool(device, &info, nil, &out))
-    return
+    return out
 }
 
-vulkan_create_descriptor_pool :: proc(device: vk.Device, gpu: ^Vulkan_Graphics_Device) -> (max_textures: u32, pool: vk.DescriptorPool) {
-    safeguard_size: u32 = 2
-    max_descriptor_sets: u32 = min(1000, gpu.device_properties.limits.maxDescriptorSetUniformBuffers - safeguard_size)
-    max_textures = 10000
-    max_textures = min(max_textures, gpu.device_properties.limits.maxDescriptorSetSampledImages - safeguard_size)
+vk_pool_create :: proc(pool: ^Vk_Pool($T), data: T) -> Vk_Handle(T) {
+    id := vk_pool_get_new_id(pool)
 
-    pool_sizes := make([dynamic]vk.DescriptorPoolSize)
-    append(&pool_sizes, vk.DescriptorPoolSize {
-        type = .COMBINED_IMAGE_SAMPLER,
-        descriptorCount = max_textures,
-    })
+    append(&pool.data, data)
+    pool.id_map[id] = len(pool.data) - 1
+    append(&pool.index_map, id)
 
-    pool_info := vk.DescriptorPoolCreateInfo {
-        sType = .DESCRIPTOR_POOL_CREATE_INFO,
-        flags = { .UPDATE_AFTER_BIND, .FREE_DESCRIPTOR_SET },
-        maxSets = max_descriptor_sets,
-        poolSizeCount = u32(len(pool_sizes)),
-        pPoolSizes = raw_data(pool_sizes)
+    return {
+        id = id
     }
-    vkcheck(vk.CreateDescriptorPool(device, &pool_info, nil, &pool))
-    return
 }
 
-// Creates the swapchain the first time.
-// THIS SHOULD ONLY BE RUN ONCE. For further recreations, run vulkan_swapchain_init/deinit
-vulkan_swapchain_create :: proc(
-    graphics_device: ^Vulkan_Graphics_Device,
+vk_pool_get :: proc(pool: ^Vk_Pool($T), handle: Vk_Handle(T)) -> T {
+    index := pool.id_map[handle.id]
+    return pool.data[index]
+}
+
+vk_pool_get_ptr :: proc(pool: ^Vk_Pool($T), handle: Vk_Handle(T)) -> ^T {
+    index := pool.id_map[handle.id]
+    return &pool.data[index]
+}
+
+vk_pool_remove :: proc(pool: ^Vk_Pool($T), handle: Vk_Handle(T)) {
+    old_index := pool.id_map[handle.id]
+
+    new_handle := pool.index_map[len(pool.index_map) - 1]
+
+    unordered_remove(&pool.data, old_index)
+    unordered_remove(&pool.index_map, old_index)
+    pool.id_map[new_handle] = old_index
+
+    delete_key(&pool.id_map, handle.id)
+
+    odin_queue.push(&pool.available_ids, handle.id)
+}
+
+vk_pool_destroy :: proc(pool: ^Vk_Pool($T)) {
+    delete(pool.data)
+    delete(pool.id_map)
+    delete(pool.index_map)
+    odin_queue.destroy(&pool.available_ids)
+}
+
+Vk_Image :: struct {
+    image: vk.Image,
+    usage_flags: vk.ImageUsageFlags,
+    memory: [3]vk.DeviceMemory,
+    allocation: vma.Allocation,
+    format_properties: vk.FormatProperties,
+    extent: vk.Extent3D,
+    type: vk.ImageType,
+    image_format: vk.Format,
+    samples: vk.SampleCountFlags,
+    mapped_ptr: rawptr,
+    is_swapchain_image: bool,
+    is_owning_vk_image: bool,
+    num_levels: u32,
+    num_layers: u32,
+    is_depth_format: bool,
+    is_stencil_format: bool,
+    image_layout: vk.ImageLayout,
+    // Precached image views
+    image_view: vk.ImageView, // Default view with all mip-levels
+    image_view_storage: vk.ImageView, // Default view with identity swizzle (all mip-levels)
+    image_view_for_framebuffer: [6][MAX_MIP_LEVELS]vk.ImageView, // Max 6 faces for cubemap rendering
+}
+
+vk_image_create_image_view :: proc(
+    image: ^Vk_Image,
     device: vk.Device,
-    graphics_queue: ^Vulkan_Queue_Info,
-    present_queue: ^Vulkan_Queue_Info,
-    pool: vk.CommandPool,
-    surface: vk.SurfaceKHR,
-) -> (swapchain: Vulkan_SwapChain) {
-    swapchain.graphics_device = graphics_device
-    swapchain.device = device
-    swapchain.graphics_queue = graphics_queue
-    swapchain.present_queue = present_queue
-    swapchain.command_pool = pool
-    swapchain.surface = surface
-
-    swapchain.current_frame = 0
-    swapchain.next_image_index = 0
-    swapchain.need_rebuild = false
-    swapchain.max_frames_in_flight = 3
-    return
-}
-
-// Recreates a swapchain, given some data
-vulkan_swapchain_init :: proc(
-    swapchain: ^Vulkan_SwapChain,
-    graphics_device: ^Vulkan_Graphics_Device,
-    device: vk.Device,
-    graphics_queue: ^Vulkan_Queue_Info,
-    present_queue: ^Vulkan_Queue_Info,
-    pool: vk.CommandPool,
-    surface: vk.SurfaceKHR,
-) {
-    swapchain.graphics_device = graphics_device
-    swapchain.device = device
-    swapchain.graphics_queue = graphics_queue
-    swapchain.present_queue = present_queue
-    swapchain.command_pool = pool
-    swapchain.surface = surface
-}
-
-vulkan_swapchain_init_resources :: proc(swapchain: ^Vulkan_SwapChain, vsync: bool = true) -> vk.Extent2D {
-    out_window_size: vk.Extent2D
-
-    surface_info_2 := vk.PhysicalDeviceSurfaceInfo2KHR {
-        sType = .PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
-        surface = swapchain.surface,
-    }
-    capabilities_2 := vk.SurfaceCapabilities2KHR {
-        sType = .SURFACE_CAPABILITIES_2_KHR
-    }
-    vk.GetPhysicalDeviceSurfaceCapabilities2KHR(swapchain.graphics_device.device, &surface_info_2, &capabilities_2)
-
-    surface_format := vulkan_choose_surface_format(swapchain.graphics_device.surface_formats[:])
-    present_mode := vulkan_choose_present_mode(swapchain.graphics_device.present_modes[:])
-    out_window_size = capabilities_2.surfaceCapabilities.currentExtent
-
-    // Adjust number of images in flight within GPU limits
-    min_image_count: u32 = capabilities_2.surfaceCapabilities.minImageCount
-    preferred_image_count: u32 = max(3, min_image_count)
-
-    max_image_count: u32 = capabilities_2.surfaceCapabilities.maxImageCount == 0 ? preferred_image_count : capabilities_2.surfaceCapabilities.maxImageCount
-
-    swapchain.max_frames_in_flight = clamp(preferred_image_count, min_image_count, max_image_count)
-
-    swapchain.image_format = surface_format.surfaceFormat.format
-
-    swapchain_create_info := vk.SwapchainCreateInfoKHR {
-        sType = .SWAPCHAIN_CREATE_INFO_KHR,
-        surface = swapchain.surface,
-        minImageCount = swapchain.max_frames_in_flight,
-        imageFormat = surface_format.surfaceFormat.format,
-        imageColorSpace = surface_format.surfaceFormat.colorSpace,
-        imageExtent = capabilities_2.surfaceCapabilities.currentExtent,
-        imageArrayLayers = 1,
-        imageUsage = { .COLOR_ATTACHMENT, .TRANSFER_DST },
-        imageSharingMode = .EXCLUSIVE,
-        preTransform = capabilities_2.surfaceCapabilities.currentTransform,
-        compositeAlpha = { .OPAQUE },
-        presentMode = present_mode,
-        clipped = true
-    }
-
-    if swapchain.graphics_queue.family_index != swapchain.present_queue.family_index {
-        indices: [2]u32 = { swapchain.graphics_queue.family_index, swapchain.present_queue.family_index }
-
-        // Only 2 sharing modes, use this one if they're not exclusive to one queue
-        swapchain_create_info.imageSharingMode = .CONCURRENT
-        swapchain_create_info.queueFamilyIndexCount = 2
-        swapchain_create_info.pQueueFamilyIndices = raw_data(indices[:])
-    } else {
-        // Same indices, queue can have exclusive access
-        swapchain_create_info.imageSharingMode = .EXCLUSIVE
-    }
-
-    fmt.println("About to create")
-
-    vkcheck(vk.CreateSwapchainKHR(swapchain.device, &swapchain_create_info, nil, &swapchain.swapchain))
-
-    // Retrieve the swapchain images
-    image_count: u32
-    vk.GetSwapchainImagesKHR(swapchain.device, swapchain.swapchain, &image_count, nil)
-    assert(swapchain.max_frames_in_flight == image_count, "Wrong swapchain setup!")
-    swap_images := make([dynamic]vk.Image, image_count)
-    vk.GetSwapchainImagesKHR(swapchain.device, swapchain.swapchain, &image_count, raw_data(swap_images))
-
-    fmt.println("Got images")
-
-    resize(&swapchain.next_images, cast(int)swapchain.max_frames_in_flight)
-    image_view_create_info := vk.ImageViewCreateInfo {
+    type: vk.ImageViewType,
+    format: vk.Format,
+    aspect_mask: vk.ImageAspectFlags,
+    base_level: u32,
+    num_levels: u32,
+    base_layer: u32,
+    num_layers: u32,
+    mapping: vk.ComponentMapping = {
+        r = .IDENTITY,
+        g = .IDENTITY,
+        b = .IDENTITY,
+        a = .IDENTITY,
+    },
+    ycbcr: ^vk.SamplerYcbcrConversionInfo = nil,
+) -> vk.ImageView {
+    info := vk.ImageViewCreateInfo {
         sType = .IMAGE_VIEW_CREATE_INFO,
-        viewType = .D2,
-        format = swapchain.image_format,
-        components = {
-            r = .IDENTITY,
-            g = .IDENTITY,
-            b = .IDENTITY,
-            a = .IDENTITY,
-        },
+        pNext = ycbcr,
+        image = image.image,
+        viewType = type,
+        format = format,
+        components = mapping,
         subresourceRange = {
-            aspectMask = { .COLOR },
-            baseMipLevel = 0,
-            levelCount = 1,
-            baseArrayLayer = 0,
-            layerCount = 1
+            aspectMask = aspect_mask,
+            baseMipLevel = base_level,
+            levelCount = num_levels != 0 ? num_levels : image.num_levels,
+            baseArrayLayer = base_layer,
+            layerCount = num_layers
         }
     }
 
-    for i in 0..<swapchain.max_frames_in_flight {
-        swapchain.next_images[i].image = swap_images[i]
-        image_view_create_info.image = swapchain.next_images[i].image
-        vkcheck(vk.CreateImageView(swapchain.device, &image_view_create_info, nil, &swapchain.next_images[i].view))
+    out: vk.ImageView
+    vkcheck(vk.CreateImageView(device, &info, nil, &out))
+
+    return out
+}
+
+MAX_SWAPCHAIN_IMAGES :: 16
+MAX_MIP_LEVELS :: 16
+
+Vk_Swapchain :: struct {
+    swapchain: vk.SwapchainKHR,
+    renderer: ^Vk_Renderer,
+    device: ^Vk_Graphics_Device,
+    graphics_queue: ^Vk_Queue,
+    extent: vk.Extent2D,
+    format: vk.SurfaceFormatKHR,
+    images: [dynamic]vk.Image,
+    wait_values: [MAX_SWAPCHAIN_IMAGES]u64,
+    current_frame_index: u64,
+    current_image_index: u32,
+    timeline_semaphore: vk.Semaphore,
+    acquire_semaphores: [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
+    swapchain_textures: [MAX_SWAPCHAIN_IMAGES]Vk_Texture,
+}
+
+vk_create_swapchain :: proc(rend: ^Vk_Renderer, width, height: u32) {
+    swapchain := Vk_Swapchain {
+        renderer = rend,
+        device = rend.graphics_device,
+        graphics_queue = &rend.graphics_queue,
+        extent = { width = width, height = height }
     }
 
-    fmt.println("Created image views")
+    surface_format := vk_choose_swap_surface_format(swapchain.device.surface_formats, rend.color_space)
+    swapchain.format = surface_format
+    queue_family_supports_presentation: b32 = false
+    vk.GetPhysicalDeviceSurfaceSupportKHR(swapchain.device.device, swapchain.graphics_queue.family_index, rend.surface, &queue_family_supports_presentation)
 
-    // Initialize frame resources for each frame
-    resize(&swapchain.frame_resources, cast(int)swapchain.max_frames_in_flight)
-    for i in 0..<swapchain.max_frames_in_flight {
-        semaphore_create_info := vk.SemaphoreCreateInfo { sType = .SEMAPHORE_CREATE_INFO }
-        vkcheck(vk.CreateSemaphore(swapchain.device, &semaphore_create_info, nil, &swapchain.frame_resources[i].acquire_semaphore))
-        vkcheck(vk.CreateSemaphore(swapchain.device, &semaphore_create_info, nil, &swapchain.frame_resources[i].render_complete_semaphore))
-    }
-
-    fmt.println("Created semaphores")
-
-    // Transition images to present layout
-    {
-        cmd := vulkan_begin_single_time_commands(swapchain.device, swapchain.command_pool)
-        fmt.println("Got cmd")
-        for i in 0..<swapchain.max_frames_in_flight {
-            vulkan_transition_image_layout(cmd, swapchain.next_images[i].image, .UNDEFINED, .PRESENT_SRC_KHR)
+    choose_usage_flags :: proc(device: ^Vk_Graphics_Device, surface: vk.SurfaceKHR, format: vk.Format) -> vk.ImageUsageFlags {
+        usage_flags: vk.ImageUsageFlags = { .COLOR_ATTACHMENT, .TRANSFER_DST, .TRANSFER_SRC }
+        is_storage_supported := device.surface_caps.supportedUsageFlags & { .STORAGE } != {}
+        props: vk.FormatProperties
+        vk.GetPhysicalDeviceFormatProperties(device.device, format, &props)
+        is_tiling_optimal_supported := props.optimalTilingFeatures & { .STORAGE_IMAGE } != {}
+        if is_storage_supported && is_tiling_optimal_supported {
+            usage_flags += { .STORAGE }
         }
-        fmt.println("Did command")
-        vulkan_end_single_time_commands(&cmd, swapchain.device, swapchain.command_pool, swapchain.present_queue.queue)
-        fmt.println("Ended commands")
+        return usage_flags
     }
 
-    fmt.println("Conducted commands.")
-
-    delete(swap_images)
-
-    return out_window_size
-}
-
-vulkan_swapchain_reinit_resources :: proc(swapchain: ^Vulkan_SwapChain, vsync: bool = true) -> vk.Extent2D {
-    // Wait for all frames to finish rendering before recreating the swapchain
-    vkcheck(vk.QueueWaitIdle(swapchain.present_queue.queue))
-
-    swapchain.current_frame = 0
-    swapchain.need_rebuild = false
-    fmt.println("About to deinit")
-    vulkan_swapchain_deinit_resources(swapchain)
-    fmt.println("About to reinit")
-    return vulkan_swapchain_init_resources(swapchain, vsync)
-}
-
-vulkan_swapchain_deinit_resources :: proc(swapchain: ^Vulkan_SwapChain) {
-    vk.DestroySwapchainKHR(swapchain.device, swapchain.swapchain, nil)
-    for data in swapchain.frame_resources {
-        vk.DestroySemaphore(swapchain.device, data.acquire_semaphore, nil)
-        vk.DestroySemaphore(swapchain.device, data.render_complete_semaphore, nil)
+    choose_swap_present_mode :: proc(modes: [dynamic]vk.PresentModeKHR) -> vk.PresentModeKHR {
+        for mode in modes {
+            if mode == .MAILBOX {
+                return .MAILBOX
+            }
+        }
+        return .FIFO
     }
-    for image in swapchain.next_images {
-        vk.DestroyImageView(swapchain.device, image.view, nil)
+
+    choose_swap_image_count :: proc(caps: vk.SurfaceCapabilitiesKHR) -> u32 {
+        desired: u32 = caps.minImageCount + 1
+        exceeded := caps.maxImageCount > 0 && desired > caps.maxImageCount
+        return exceeded ? caps.maxImageCount : desired
     }
+
+    usage_flags := choose_usage_flags(swapchain.device, rend.surface, surface_format.format)
+    is_composite_alpha_opaque_supported := swapchain.device.surface_caps.supportedCompositeAlpha & { .OPAQUE } != {}
+
+    info := vk.SwapchainCreateInfoKHR {
+        sType = .SWAPCHAIN_CREATE_INFO_KHR,
+        surface = rend.surface,
+        minImageCount = choose_swap_image_count(swapchain.device.surface_caps),
+        imageFormat = surface_format.format,
+        imageColorSpace = surface_format.colorSpace,
+        imageExtent = swapchain.extent,
+        imageArrayLayers = 1,
+        imageUsage = usage_flags,
+        imageSharingMode = .EXCLUSIVE,
+        queueFamilyIndexCount = 1,
+        pQueueFamilyIndices = &swapchain.graphics_queue.family_index,
+        preTransform = swapchain.device.surface_caps.currentTransform,
+        compositeAlpha = is_composite_alpha_opaque_supported ? { .OPAQUE } : { .INHERIT },
+        presentMode = choose_swap_present_mode(swapchain.device.present_modes),
+        clipped = true,
+    }
+    vk.CreateSwapchainKHR(rend.device, &info, nil, &swapchain.swapchain)
+
+    num_images: u32
+    vk.GetSwapchainImagesKHR(rend.device, swapchain.swapchain, &num_images, nil)
+    if num_images > 16 {
+        num_images = 16
+    }
+    resize(&swapchain.images, num_images)
+    vk.GetSwapchainImagesKHR(rend.device, swapchain.swapchain, &num_images, raw_data(swapchain.images))
+
+    for i in 0..<num_images {
+        swapchain.acquire_semaphores[i] = vk_create_semaphore(rend.device)
+
+        image := Vk_Image {
+            image = swapchain.images[i],
+            usage_flags = usage_flags,
+            extent = { width = swapchain.extent.width, height = swapchain.extent.height, depth = 1 },
+            type = .D2,
+            image_format = surface_format.format,
+            is_swapchain_image = true,
+            is_owning_vk_image = false,
+            is_depth_format = vk_is_depth_format(surface_format.format),
+            is_stencil_format = vk_is_stencil_format(surface_format.format),
+            samples = { ._1 },
+            num_layers = 1,
+            num_levels = 1,
+        }
+
+        image.image_view = vk_image_create_image_view(
+            &image,
+            rend.device,
+            .D2,
+            surface_format.format,
+            { .COLOR },
+            0,
+            vk.REMAINING_MIP_LEVELS,
+            0,
+            1,
+            {},
+            nil
+        )
+
+        swapchain.swapchain_textures[i] = vk_pool_create(&rend.texture_pool, image)
+    }
+
+    // Set timeline
+    swapchain.timeline_semaphore = vk_create_timeline_semaphore(rend.device, u64(len(swapchain.images) - 1))
+
+    rend.swapchain = swapchain
 }
 
-vulkan_swapchain_acquire_next_image :: proc(swapchain: ^Vulkan_SwapChain) {
-    assert(swapchain.need_rebuild == false)
-
-    frame := &swapchain.frame_resources[swapchain.current_frame]
-
-    result := vk.AcquireNextImageKHR(swapchain.device, swapchain.swapchain, max(u64), frame.acquire_semaphore, frame.render_fence, &swapchain.next_image_index)
-
-    if result == .ERROR_OUT_OF_DATE_KHR {
-        swapchain.need_rebuild = true
-    } else {
-        assert(result == .SUCCESS || result == .SUBOPTIMAL_KHR)
-    }
-}
-
-vulkan_swapchain_present_frame :: proc(swapchain: ^Vulkan_SwapChain) {
-    frame := swapchain.frame_resources[swapchain.current_frame]
-
-    present_info := vk.PresentInfoKHR {
+vk_swapchain_present :: proc(swapchain: ^Vk_Swapchain, wait_semaphore: ^vk.Semaphore) {
+    info := vk.PresentInfoKHR {
         sType = .PRESENT_INFO_KHR,
         waitSemaphoreCount = 1,
-        pWaitSemaphores = &frame.render_complete_semaphore,
+        pWaitSemaphores = wait_semaphore,
         swapchainCount = 1,
         pSwapchains = &swapchain.swapchain,
-        pImageIndices = &swapchain.next_image_index,
+        pImageIndices = &swapchain.current_image_index,
     }
+    r := vk.QueuePresentKHR(swapchain.graphics_queue.queue, &info)
+    fmt.println(r)
 
-    result := vk.QueuePresentKHR(swapchain.present_queue.queue, &present_info)
-    if result == .ERROR_OUT_OF_DATE_KHR {
-        swapchain.need_rebuild = true
-    } else {
-        assert(result == .SUCCESS || result == .SUBOPTIMAL_KHR)
-    }
-
-    swapchain.current_frame = (swapchain.current_frame + 1) % swapchain.max_frames_in_flight
+    swapchain.current_frame_index += 1
 }
 
-vulkan_swapchain_destroy :: proc(swapchain: ^Vulkan_SwapChain) {
-    vulkan_swapchain_deinit_resources(swapchain)
-    delete(swapchain.next_images)
-    delete(swapchain.frame_resources)
-}
-
-vulkan_create_frame_submission :: proc(num_frames: u32, device: vk.Device, frame_data: ^[dynamic]Vulkan_Frame_Data) -> (semaphore: vk.Semaphore) {
-    resize(frame_data, num_frames)
-
-    // Create timeline semaphore with numframes - 1
-    initial_value: u64 = cast(u64)num_frames - 1
-
-    timeline_create_info := vk.SemaphoreTypeCreateInfo {
-        sType = .SEMAPHORE_TYPE_CREATE_INFO,
-        pNext = nil,
-        semaphoreType = .TIMELINE,
-        initialValue = initial_value
+vk_swapchain_get_current_texture :: proc(swapchain: ^Vk_Swapchain) -> Vk_Texture {
+    info := vk.SemaphoreWaitInfo {
+        sType = .SEMAPHORE_WAIT_INFO,
+        semaphoreCount = 1,
+        pSemaphores = &swapchain.timeline_semaphore,
+        pValues = &swapchain.wait_values[swapchain.current_image_index]
     }
 
-    semaphore_create_info := vk.SemaphoreCreateInfo {
-        sType = .SEMAPHORE_CREATE_INFO,
-        pNext = &timeline_create_info,
+    vk.WaitSemaphores(swapchain.renderer.device, &info, 0)
+
+    acquire_semaphore := swapchain.acquire_semaphores[swapchain.current_image_index]
+    r := vk.AcquireNextImageKHR(swapchain.renderer.device, swapchain.swapchain, max(u64), acquire_semaphore, 0, &swapchain.current_image_index)
+    if r != .SUCCESS && r != .SUBOPTIMAL_KHR && r != .ERROR_OUT_OF_DATE_KHR {
+        fmt.println(r)
+        panic("Failed to get swapchain image!")
     }
 
-    vkcheck(vk.CreateSemaphore(device, &semaphore_create_info, nil, &semaphore))
-    return
-}
+    swapchain.renderer.wait_semaphore.semaphore = acquire_semaphore
 
-vulkan_resource_allocator_new :: proc(allocator_info: vma.AllocatorCreateInfo) -> (out: Vulkan_Resource_Allocator) {
-    allocator_info := allocator_info
-    allocator_info.flags += { .BUFFER_DEVICE_ADDRESS }
-
-    out.device = allocator_info.device
-    functions := vma.create_vulkan_functions()
-    allocator_info.pVulkanFunctions = &functions
-    vma.CreateAllocator(&allocator_info, &out.allocator)
-    return
-}
-
-vulkan_resource_allocator_destroy :: proc(allocator: ^Vulkan_Resource_Allocator) {
-    if len(allocator.staging_buffers) != 0 {
-        fmt.println("Staging buffers were not freed before destroying allocator!")
-    }
-    vulkan_free_staging_buffers(allocator)
-    vma.DestroyAllocator(allocator.allocator)
-}
-
-vulkan_create_buffer :: proc(
-    allocator: ^Vulkan_Resource_Allocator,
-    size: vk.DeviceSize,
-    usage: vk.BufferUsageFlags2,
-    memory_usage: vma.MemoryUsage = vma.MemoryUsage.AUTO,
-    flags: vma.AllocationCreateFlags = {}
-) -> Vulkan_Buffer {
-    buffer_usage_flags_2_create_info := vk.BufferUsageFlags2CreateInfo {
-        sType = .BUFFER_USAGE_FLAGS_2_CREATE_INFO,
-        usage = usage + { .SHADER_DEVICE_ADDRESS }
+    // Return the actual texture
+    if cast(int)swapchain.current_image_index < len(swapchain.images) {
+        return swapchain.swapchain_textures[swapchain.current_image_index]
     }
 
-    buffer_info := vk.BufferCreateInfo {
-        sType = .BUFFER_CREATE_INFO,
-        pNext = &buffer_usage_flags_2_create_info,
-        size = size,
-        usage = {},
-        sharingMode = .EXCLUSIVE,
-    }
-
-    alloc_info := vma.AllocationCreateInfo { flags = flags, usage = memory_usage }
-    dedicated_memory_min_size: vk.DeviceSize = 64 * 1024
-    if size > dedicated_memory_min_size {
-        alloc_info.flags += { .DEDICATED_MEMORY }
-    }
-
-    result_buffer: Vulkan_Buffer
-    alloc_info_out: vma.AllocationInfo
-    vkcheck(vma.CreateBuffer(allocator.allocator, &buffer_info, &alloc_info, &result_buffer.buffer, &result_buffer.allocation, &alloc_info_out))
-
-    info := vk.BufferDeviceAddressInfo {
-        sType = .BUFFER_DEVICE_ADDRESS_INFO,
-        buffer = result_buffer.buffer
-    }
-    result_buffer.address = vk.GetBufferDeviceAddress(allocator.device, &info)
-
-    {
-        vma.SetAllocationName(allocator.allocator, result_buffer.allocation, strings.clone_to_cstring(fmt.tprint("allocID:", alloc_counter)))
-        alloc_counter += 1
-    }
-
-    return result_buffer
-}
-
-vulkan_destroy_buffer :: proc(allocator: ^Vulkan_Resource_Allocator, buffer: Vulkan_Buffer) {
-    vma.DestroyBuffer(allocator.allocator, buffer.buffer, buffer.allocation)
-}
-
-vulkan_create_staging_buffer :: proc(allocator: ^Vulkan_Resource_Allocator, vector_data: ^[dynamic]$T) -> Vulkan_Buffer {
-    buffer_size: vk.DeviceSize = size_of(T) * len(vector_data)
-
-    staging_buffer := vulkan_create_buffer(allocator, buffer_size, { .TRANSFER_SRC }, .CPU_TO_GPU, { .HOST_ACCESS_SEQUENTIAL_WRITE })
-
-    append(&allocator.staging_buffers, staging_buffer)
-
-    data: rawptr
-    vma.MapMemory(allocator.allocator, staging_buffer.allocation, &data)
-    mem.copy(data, raw_data(vector_data), buffer_size)
-    vma.UnmapMemory(allocator.allocator, staging_buffer.allocation)
-    return staging_buffer
-}
-
-vulkan_create_buffer_and_upload_data :: proc(
-    cmd: vk.CommandBuffer,
-    vector_data: ^[dynamic]$T,
-    usage_flags: vk.BufferUsageFlags2
-) -> Vulkan_Buffer {
-    // Create staging buffer and upload data
-    staging_buffer := vulkan_create_staging_buffer(allocator, vector_data)
-
-    // Create final buffer in GPU memory
-    buffer_size: vk.DeviceSize = size_of(T) * len(vector_data)
-    buffer := vulkan_create_buffer(allocator, buffer_size, usage_flags + { .TRANSFER_DST }, .GPU_ONLY)
-
-    copy_region := make([dynamic]vk.BufferCopy, 1)
-    append(&copy_region, vk.BufferCopy {
-        size = buffer_size
-    })
-    vk.CmdCopyBuffer(cmd, staging_buffer.buffer, buffer.buffer, u32(len(copy_region)), raw_data(copy_region))
-
-    return buffer
-}
-
-vulkan_create_image :: proc(allocator: ^Vulkan_Resource_Allocator, image_info: ^vk.ImageCreateInfo) -> Vulkan_Image {
-    create_info := vma.AllocationCreateInfo {
-        usage = .GPU_ONLY
-    }
-
-    image: Vulkan_Image
-    alloc_info: vma.AllocationInfo
-    vkcheck(vma.CreateImage(allocator.allocator, image_info, &create_info, &image.image, &image.allocation, &alloc_info))
-    return image
-}
-
-vulkan_destroy_image :: proc(allocator: ^Vulkan_Resource_Allocator, image: ^Vulkan_Image) {
-    vma.DestroyImage(allocator.allocator, image.image, image.allocation)
-}
-
-vulkan_destroy_image_resource :: proc(allocator: ^Vulkan_Resource_Allocator, image_resource: ^Vulkan_Image_Resource) {
-    vulkan_destroy_image(allocator, image_resource)
-    vk.DestroyImageView(allocator.device, image_resource.view, nil)
-}
-
-vulkan_create_image_and_upload_data :: proc(
-    allocator: ^Vulkan_Resource_Allocator,
-    cmd: vk.CommandBuffer,
-    vector_data: ^[dynamic]$T,
-    image_info: ^vk.ImageCreateInfo,
-    final_layout: vk.ImageLayout,
-) -> Vulkan_Image_Resource {
-    staging_buffer := vulkan_create_staging_buffer(allocator, vector_data)
-
-    image_info := image_info^
-    image_info.usage += { .TRANSFER_DST }
-    image := vulkan_create_image(allocator, &image_info)
-
-    vulkan_transition_image_layout(cmd, image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL)
-
-    // Copy buffer data to image
-    copy_region := make([dynamic]vk.BufferImageCopy, 1)
-    append(&copy_region, vk.BufferImageCopy {
-        imageSubresource = {
-            aspectMask = { .COLOR },
-            layerCount = 1,
-        },
-        imageExtent = image_info.extent
-    })
-
-    vk.CmdCopyBufferToImage(cmd, staging_buffer.buffer, image.image, .TRANSFER_DST_OPTIMAL, u32(len(copy_region)), raw_data(copy_region))
-
-    // Transition image layout to final layout
-    vulkan_transition_image_layout(cmd, image.image, .TRANSFER_DST_OPTIMAL, final_layout)
-
-    result_image: Vulkan_Image_Resource = image
-    result_image.layout = final_layout
-    return result_image
-}
-
-vulkan_free_staging_buffers :: proc(allocator: ^Vulkan_Resource_Allocator) {
-    for &buffer in allocator.staging_buffers {
-        vulkan_destroy_buffer(allocator, buffer)
-    }
-    clear(&allocator.staging_buffers)
-}
-
-vulkan_sampler_pool_new :: proc(device: vk.Device) -> Vulkan_Sampler_Pool {
-    return {
-        device = device,
-        sampler_map = {},
-    }
-}
-
-vulkan_sampler_pool_destroy :: proc(pool: ^Vulkan_Sampler_Pool) {
-    for _, val in pool.sampler_map {
-        vk.DestroySampler(pool.device, val, nil)
-    }
-    clear_map(&pool.sampler_map)
-}
-
-vulkan_acquire_sampler :: proc(pool: ^Vulkan_Sampler_Pool, info: ^vk.SamplerCreateInfo) -> vk.Sampler {
-    hash := vulkan_create_sampler_hash(info^)
-
-    if hash in pool.sampler_map {
-        return pool.sampler_map[hash]
-    }
-
-    new_sampler := vulkan_create_sampler(pool.device, info)
-    pool.sampler_map[hash] = new_sampler
-    return new_sampler
-}
-
-vulkan_release_sampler :: proc(pool: ^Vulkan_Sampler_Pool, sampler: vk.Sampler) {
-    for key, val in pool.sampler_map {
-        if val == sampler {
-            vk.DestroySampler(pool.device, val, nil)
-            delete_key(&pool.sampler_map, key)
-        }
-    }
-}
-
-vulkan_g_buffer_new :: proc(info: Vulkan_G_Buffer_Info, cmd: vk.CommandBuffer) -> (out: Vulkan_G_Buffer) {
-    out.info = info
-
-    vulkan_g_buffer_create(&out, cmd)
-    return
-}
-
-vulkan_g_buffer_create :: proc(buffer: ^Vulkan_G_Buffer, cmd: vk.CommandBuffer) {
-    layout: vk.ImageLayout = .GENERAL
-
-    num_color := cast(u32)len(buffer.info.color_formats)
-
-    resize(&buffer.color_attachments, num_color)
-    resize(&buffer.descriptors, num_color)
-    resize(&buffer.ui_views, num_color)
-    resize(&buffer.ui_descriptor_sets, num_color)
-
-    for i in 0..<num_color {
-        {
-            // Color image
-            usage: vk.ImageUsageFlags = { .COLOR_ATTACHMENT, .SAMPLED, .STORAGE, .TRANSFER_SRC, .TRANSFER_DST }
-            info := vk.ImageCreateInfo {
-                sType = .IMAGE_CREATE_INFO,
-                imageType = .D2,
-                format = buffer.info.color_formats[i],
-                extent = { buffer.info.size.width, buffer.info.size.height, 1 },
-                mipLevels = 1,
-                arrayLayers = 1,
-                samples = buffer.info.sample_count,
-                usage = usage
-            }
-            buffer.color_attachments[i] = vulkan_create_image(buffer.info.alloc, &info)
-        }
-        {
-            // Image color view
-            info := vk.ImageViewCreateInfo {
-                sType = .IMAGE_VIEW_CREATE_INFO,
-                image = buffer.color_attachments[i].image,
-                viewType = .D2,
-                format = buffer.info.color_formats[i],
-                subresourceRange = { aspectMask = { .COLOR }, levelCount = 1, layerCount = 1 }
-            }
-            vk.CreateImageView(buffer.info.device, &info, nil, &buffer.descriptors[i].imageView)
-
-            // UI Image color view
-            info.components.a = .ONE
-            vk.CreateImageView(buffer.info.device, &info, nil, &buffer.ui_views[i])
-        }
-
-        // Set sampler
-        buffer.descriptors[i].sampler = buffer.info.linear_sampler
-    }
-
-    if buffer.info.depth_format != .UNDEFINED {
-        // Depth buffer
-        info := vk.ImageCreateInfo {
-            sType = .IMAGE_CREATE_INFO,
-            imageType = .D2,
-            format = buffer.info.depth_format,
-            extent = { buffer.info.size.width, buffer.info.size.height, 1 },
-            mipLevels = 1,
-            arrayLayers = 1,
-            samples = buffer.info.sample_count,
-            usage = { .DEPTH_STENCIL_ATTACHMENT, .SAMPLED }
-        }
-        buffer.depth_attachment = vulkan_create_image(buffer.info.alloc, &info)
-
-        // Image depth view
-        view_info := vk.ImageViewCreateInfo {
-            sType = .IMAGE_VIEW_CREATE_INFO,
-            image = buffer.depth_attachment.image,
-            viewType = .D2,
-            format = buffer.info.depth_format,
-            subresourceRange = { aspectMask = { .DEPTH }, levelCount = 1, layerCount = 1 }
-        }
-        vk.CreateImageView(buffer.info.device, &view_info, nil, &buffer.depth_view)
-    }
-
-    {
-        // Change color image layout
-        for i in 0..<num_color {
-            vulkan_transition_image_layout(cmd, buffer.color_attachments[i].image, .UNDEFINED, layout)
-            buffer.descriptors[i].imageLayout = layout
-
-            // Clear to avoid garbage data
-            clear_value := vk.ClearColorValue { float32 = { 0, 0, 0, 1 } }
-            range := vk.ImageSubresourceRange { aspectMask = { .COLOR }, levelCount = 1, layerCount = 1 }
-            vk.CmdClearColorImage(cmd, buffer.color_attachments[i].image, layout, &clear_value, 1, &range)
-        }
-    }
-
-    // IMGUI Descriptor set would go here
-}
-
-vulkan_g_buffer_destroy :: proc(buffer: ^Vulkan_G_Buffer) {
-    for &image in buffer.color_attachments {
-        vulkan_destroy_image(buffer.info.alloc, &image)
-    }
-
-    if buffer.depth_attachment.image != 0 {
-        vulkan_destroy_image(buffer.info.alloc, &buffer.depth_attachment)
-    }
-
-    vk.DestroyImageView(buffer.info.device, buffer.depth_view, nil)
-
-    for desc in buffer.descriptors {
-        vk.DestroyImageView(buffer.info.device, desc.imageView, nil)
-    }
-
-    for view in buffer.ui_views {
-        vk.DestroyImageView(buffer.info.device, view, nil)
-    }
-}
-
-vulkan_g_buffer_update :: proc(buffer: ^Vulkan_G_Buffer, cmd: vk.CommandBuffer, new_size: vk.Extent2D) {
-    if new_size.width == buffer.info.size.width && new_size.height == buffer.info.size.height {
-        return
-    }
-
-    vulkan_g_buffer_destroy(buffer)
-    buffer.info.size = new_size
-    vulkan_g_buffer_create(buffer, cmd)
+    return {}
 }

@@ -13,13 +13,14 @@ Scene_Unload_Proc :: #type proc(scene: ^Scene)
 // desired load and unload procs using the `scene_new_with_procs` variant, in order to avoid accidentally forgetting the procs
 // and not actually loading anything into the Scene.
 Scene :: struct {
-    // A scene's personal collection of user-defined tasks.
-    module: Module,
     // A scene's personal ECS world
     world: World,
     // A pointer to the Context
     ctx: ^Context,
+    // The current frame of the run.
     frame_count: u64,
+    // The tasks registered to run.
+    task_list: [dynamic]Task,
 
     scene_load: Scene_Load_Proc,
     scene_unload: Scene_Unload_Proc,
@@ -34,7 +35,6 @@ scene_new :: proc {
 scene_new_empty :: proc() -> (ctx: ^Context, out: ^Scene) {
     out = new(Scene)
 
-    out.module = module_new()
     out.world = world_new()
     out.ctx = ctx
 
@@ -45,7 +45,6 @@ scene_new_empty :: proc() -> (ctx: ^Context, out: ^Scene) {
 scene_new_with_procs :: proc(ctx: ^Context, load: Scene_Load_Proc, unload: Scene_Unload_Proc) -> (out: ^Scene) {
     out = new(Scene)
 
-    out.module = module_new()
     out.world = world_new()
     out.ctx = ctx
 
@@ -55,14 +54,26 @@ scene_new_with_procs :: proc(ctx: ^Context, load: Scene_Load_Proc, unload: Scene
     return
 }
 
+// Adds a module to the scene's Task list.
+scene_add_module :: proc(scene: ^Scene, module: Module) {
+    for task in module.tasks {
+        append(&scene.task_list, task)
+    }
+}
+
 // Adds a given task to a scene's module.
 scene_add_task :: proc(scene: ^Scene, task: Task) {
-    append(&scene.module.tasks, task)
+    append(&scene.task_list, task)
 }
 
 // Destroys a scene.
 scene_destroy :: proc(scene: ^Scene) {
-    module_destroy(&scene.module)
     world_destroy(&scene.world)
+
+    for &task in scene.task_list {
+        task_destroy(&task)
+    }
+
+    delete(scene.task_list)
     free(scene)
 }

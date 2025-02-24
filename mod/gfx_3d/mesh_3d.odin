@@ -22,10 +22,10 @@ Mesh_Internal :: union {
 mesh_internal_new :: proc(conf: milk.Renderer_Type, rend: ^milk.Renderer_Internal, vertices: []milk.Vertex, indices: []u16) -> (internal: Mesh_Internal, commands: Mesh_Commands) {
 	switch conf {
 	case .Vulkan: {
-		commands.new = mesh_vulkan_new
-		commands.bind_buffers = mesh_vulkan_bind_buffers
-		commands.draw = mesh_vulkan_draw
-		commands.destroy = mesh_vulkan_destroy
+		commands.new = mesh_vk_new
+		commands.bind_buffers = mesh_vk_bind_buffers
+		commands.draw = mesh_vk_draw
+		commands.destroy = mesh_vk_destroy
 	}
 	}
 
