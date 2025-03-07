@@ -1,0 +1,6 @@
+[submodule "lib/vma"]
+	path = lib/vma
+	url = https://github.com/Capati/odin-vma.git
+[submodule "lib/vkb"]
+	path = lib/vkb
+	url = https://github.com/Capati/odin-vk-bootstrap.git
