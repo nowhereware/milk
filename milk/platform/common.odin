@@ -56,3 +56,9 @@ framebuffer_new :: proc(color_attaches: []Frame_Attachment) -> (out: Framebuffer
 
     return
 }
+
+Uniform_Buffer_Object :: struct {
+	model: Mat4,
+	view: Mat4,
+	proj: Mat4
+}

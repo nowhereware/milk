@@ -4,6 +4,17 @@ command_buffer_begin_draw_proc :: #type proc(
     rend: ^Renderer_Internal,
     buffer: Command_Buffer_Internal,
 )
+command_buffer_bind_graphics_pipeline_proc :: #type proc(
+    buffer: Command_Buffer_Internal,
+    pipeline: Pipeline_Internal,
+)
+command_buffer_unbind_graphics_pipeline_proc :: #type proc(
+    buffer: Command_Buffer_Internal,
+    pipeline: Pipeline_Internal,
+)
+command_buffer_end_draw_proc :: #type proc(
+    buffer: Command_Buffer_Internal,
+)
 command_buffer_end_proc :: #type proc(buffer: Command_Buffer_Internal)
 
 Command_Buffer_Internal :: union {
@@ -13,6 +24,9 @@ Command_Buffer_Internal :: union {
 
 Command_Buffer_Commands :: struct {
     begin_draw: command_buffer_begin_draw_proc,
+    bind_graphics_pipeline: command_buffer_bind_graphics_pipeline_proc,
+    unbind_graphics_pipeline: command_buffer_unbind_graphics_pipeline_proc,
+    end_draw: command_buffer_end_draw_proc,
     end: command_buffer_end_proc,
 }
 
@@ -25,11 +39,15 @@ command_buffer_internal_new :: proc(rend: ^Renderer_Internal, pool: ^Command_Poo
     switch r in rend {
         case Vk_Renderer: {
             commands.begin_draw = vk_command_buffer_begin_draw
+            commands.end_draw = vk_command_buffer_end_draw
             commands.end = vk_command_buffer_end
             temp_acquire = vk_command_pool_acquire
         }
         case Gl_Renderer: {
             commands.begin_draw = gl_command_buffer_begin_draw
+            commands.bind_graphics_pipeline = gl_command_buffer_bind_graphics_pipeline
+            commands.unbind_graphics_pipeline = gl_command_buffer_unbind_graphics_pipeline
+            commands.end_draw = gl_command_buffer_end_draw
             commands.end = gl_command_buffer_end
             temp_acquire = gl_command_pool_acquire
         }

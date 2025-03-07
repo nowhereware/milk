@@ -1,5 +1,6 @@
 package milk_platform
 
+import "core:fmt"
 import gl "vendor:OpenGL"
 import SDL "vendor:sdl3"
 
@@ -49,13 +50,16 @@ gl_renderer_set_framebuffer_resized :: proc(rend: ^Renderer_Internal, size: UVec
     gl.Viewport(0, 0, i32(size.x), i32(size.y))
 }
 
-gl_renderer_submit_buffer :: proc(rend: ^Renderer_Internal, buffer: Command_Buffer_Internal) {
+gl_renderer_submit_pool :: proc(rend: ^Renderer_Internal, pool: ^Command_Pool_Internal) {
     rend := &rend.(Gl_Renderer)
-    buffer := buffer.(^Gl_Command_Buffer)
+    pool := &pool.(Gl_Command_Pool)
 
-    for command in buffer.commands {
+    for command in pool.buffer.commands {
         command.execute(command.data)
     }
+
+    // Clear out commands
+    clear(&pool.buffer.commands)
 }
 
 gl_renderer_register_main_pool :: proc(rend: ^Renderer_Internal, pool: ^Command_Pool_Internal) {

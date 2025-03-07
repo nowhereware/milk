@@ -308,19 +308,26 @@ ecs_storage_destroy :: proc(storage: ^Storage) {
 	queue.destroy(&storage.command_queue)
 }
 
-// Copies the data of a given Storage into a new storage.
-ecs_storage_copy :: proc(storage: ^Storage) -> (out: Storage) {
-	for key, val in storage.entity_map {
-		out.entity_map[key] = val
+// Copies the data of a given Storage into a destination storage.
+ecs_storage_copy :: proc(src, dst: ^Storage) {
+	for key, val in src.entity_map {
+		dst.entity_map[key] = val
 	}
 
-	mem.copy_non_overlapping(raw_data(out.index_map), raw_data(storage.index_map), len(storage.index_map) * size_of(Entity))
-	mem.copy_non_overlapping(out.dense_storage, storage.dense_storage, storage.length * storage.element_size)
-	out.element_size = storage.element_size
-	out.length = storage.length
-	out.cap = storage.cap
-	out.command_queue = storage.command_queue
-	out.mutex = {}
+	clear(&dst.index_map)
+	append_elems(&dst.index_map, ..src.index_map[:])
+
+	err: mem.Allocator_Error
+	dst.dense_storage, err = mem.resize(dst.dense_storage, 0, src.length * src.element_size)
+	if err != .None {
+		panic("Failed to resize output storage!")
+	}
+	mem.copy(dst.dense_storage, src.dense_storage, src.length * src.element_size)
+	dst.element_size = src.element_size
+	dst.length = src.length
+	dst.cap = src.cap
+	dst.command_queue = {}
+	dst.mutex = {}
 
 	return
 }
@@ -551,14 +558,14 @@ ecs_query :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
     }
 
     // Get the signatures matching our query
-    sig_search_prof := profile_get(thread_profiler(), "ECS_SIG_SEARCH")
+    sig_search_prof := profile_get(&local_profiler, "ECS_SIG_SEARCH")
 
-    profile_set_user_data(sig_search_prof, "Signature Search Size:", ba.len(&query_sig))
-    profile_start(sig_search_prof)
+    profile_set_user_data(&sig_search_prof, "Signature Search Size:", ba.len(&query_sig))
+    profile_start(&sig_search_prof)
 
     indices_arr := make([dynamic]int, context.temp_allocator)
 
-    take_step(sig_search_prof, "ARR_MADE")
+    take_step(&sig_search_prof, "ARR_MADE")
 
     query_iter := ba.make_iterator(&query_sig)
     next_bit, ok := ba.iterate_by_set(&query_iter)
@@ -572,7 +579,7 @@ ecs_query :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
         }
     }
 
-    take_step_with_data(sig_search_prof, "INDICES_CREATE_NUMS", "Sig Size:", len(world.signature_array))
+    take_step_with_data(&sig_search_prof, "INDICES_CREATE_NUMS", "Sig Size:", len(world.signature_array))
     
     for next_bit, ok = ba.iterate_by_set(&query_iter); ok; next_bit, ok = ba.iterate_by_set(&query_iter) {
         remove_indices := make([dynamic]int, context.temp_allocator)
@@ -590,16 +597,16 @@ ecs_query :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
         }
     }
 
-    take_step(sig_search_prof, "SIGNATURE_ITER")
+    take_step(&sig_search_prof, "SIGNATURE_ITER")
 
     // Add the entities in said signature indices to our result
     for index in indices_arr {
         append_elems(&out.entities, ..world.signature_storages[index].index_map[:])
     }
 
-    take_step_with_data(sig_search_prof, "APPENDED_ELEMS", "Indices Arr Size:", len(indices_arr))
+    take_step_with_data(&sig_search_prof, "APPENDED_ELEMS", "Indices Arr Size:", len(indices_arr))
 
-    profile_end(sig_search_prof)
+    profile_end(&sig_search_prof)
 
     // Done.
     return

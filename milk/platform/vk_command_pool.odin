@@ -150,7 +150,8 @@ vk_command_buffer_begin_draw :: proc(
     vk.CmdBeginRendering(buffer.buffer, &rend.render_info)
 }
 
-vk_command_buffer_end_draw :: proc(buffer: Vk_Command_Buffer) {
+vk_command_buffer_end_draw :: proc(buffer: Command_Buffer_Internal) {
+    buffer := buffer.(^Vk_Command_Buffer)
     vk.CmdEndRendering(buffer.buffer)
 }
 

@@ -30,7 +30,6 @@ timestep_new :: proc(prev_time: time.Tick) -> Timestep {
 Worker_Pool :: struct {
     allocator: mem.Allocator,
     mutex: sync.Mutex,
-    sem_available: sync.Sema,
 
     // Atomic variables
     num_waiting: int,
@@ -159,6 +158,10 @@ worker_pool_clear_done :: proc(pool: ^Worker_Pool) {
     if len(pool.tasks_done) != 0 {
         clear(&pool.tasks_done)
     }
+
+    // Clear the queue out too
+    queue.clear(&pool.tasks)
+    queue.destroy(&pool.tasks)
 }
 
 Worker_Thread_Data :: struct {
@@ -182,6 +185,10 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
     context.allocator = t.creation_allocator
 
     accumulator: f64
+
+    local_command_pool = command_pool_new(&d.ctx.renderer)
+
+    local_profiler = profiler_new()
     
     outer: for sync.atomic_load(&pool.is_running) {
         sync.barrier_wait(&pool.sync)
@@ -215,17 +222,24 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
             pool.tasks_done[task.name] = {}
             sync.atomic_sub(&pool.num_outstanding, 1)
             sync.atomic_sub(&pool.num_in_processing, 1)
-
-            sync.guard(&pool.mutex)
         }
 
         // Out of tasks, submit command pool.
+        gfx_submit_pool(&d.ctx.renderer, &local_command_pool)
 
         // Free temp allocations
         free_all(context.temp_allocator)
         // Wait to quit
         sync.barrier_wait(&pool.sync)
     }
+
+    // App ending, submit profiler
+    sync.mutex_lock(&d.ctx.thread_profiler_mutex)
+    append(&d.ctx.thread_profilers, local_profiler)
+    sync.mutex_unlock(&d.ctx.thread_profiler_mutex)
+
+    // Delete command pool
+    command_pool_destroy(&local_command_pool)
 }
 
 start_worker_thread :: proc(d: ^Worker_Thread_Data) {

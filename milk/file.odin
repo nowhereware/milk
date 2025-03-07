@@ -5,15 +5,32 @@ import "core:os"
 import "core:strings"
 
 @(private="file")
-_handle_error :: proc(error: os.Error) {
+_handle_error :: proc(error: os.Error, loc := #caller_location) {
     if error != nil {
-        panic(fmt.aprint(error))
+        panic(fmt.aprint(error), loc)
     }
 }
 
 // Loads a file and returns its bytes, given a *complete* relative path.
-file_get :: proc(path: string, allocator := context.allocator) -> ([]u8, bool) {
-    return os.read_entire_file_from_filename(path, allocator)
+file_get :: proc(path: string, allocator := context.allocator) -> [dynamic]u8 {
+    slice, err := os.read_entire_file_from_filename(path, context.temp_allocator)
+
+    if !err {
+        fmt.println("Failed to get file:", path)
+    }
+
+    out := make([dynamic]u8, allocator)
+
+    for b in slice {
+        append(&out, b)
+    }
+
+    return out
+}
+
+// Deletes a slice of file data grabbed from `file_get`
+file_close :: proc(data: []u8) {
+    delete(data)
 }
 
 // Searches a given directory for files of the given name, and returns a list of matching file paths
@@ -30,13 +47,17 @@ file_search :: proc(dir, name: string, allocator := context.allocator) -> (match
 
     for info in file_infos {
         if strings.contains(info.name, name) {
-            append_elem(&matches_arr, info.fullpath)
+            append_elem(&matches_arr, info.name)
         }
+
+        os.file_info_delete(info)
     }
 
     os.close(dir_handle)
 
     matches = matches_arr[:]
+
+    delete(file_infos)
     return
 }
 
@@ -54,8 +75,8 @@ file_get_suffix :: proc(file: string) -> string {
 
 // Returns lowest parent folder of a given path
 file_get_parent_folder :: proc(path: string) -> string {
-    slash_index := strings.index_rune(path, '/')
-    parent, ok := strings.substring(path, 0, slash_index)
+    slash_index := strings.last_index(path, "/")
+    parent, ok := strings.substring(path, 0, slash_index + 1)
 
     if !ok {
         panic("Failed to get parent folder!")
@@ -66,7 +87,7 @@ file_get_parent_folder :: proc(path: string) -> string {
 
 // Returns a file's name given a full path
 file_get_name :: proc(path: string) -> string {
-    slash_index := strings.index_rune(path, '/')
+    slash_index := strings.last_index(path, "/")
     file, ok := strings.substring_from(path, slash_index + 1)
 
     if !ok {

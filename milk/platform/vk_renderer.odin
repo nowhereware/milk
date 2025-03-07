@@ -7,7 +7,7 @@ import "core:strings"
 import "core:mem"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
-import "shared:vma"
+import "../../lib/vma"
 
 Vk_Renderer :: struct {
     instance: vk.Instance,
@@ -240,10 +240,6 @@ vk_renderer_begin :: proc(rend: ^Renderer_Internal) {
     }
 }
 
-vk_renderer_bind_graphics_pipeline :: proc(rend: ^Renderer_Internal, pipeline: ^Pipeline_Internal) {
-    
-}
-
 vk_renderer_end :: proc(rend: ^Renderer_Internal, window: ^SDL.Window) {
     rend := &rend.(Vk_Renderer)
 
@@ -295,10 +291,12 @@ vk_renderer_set_framebuffer_resized :: proc(rend: ^Renderer_Internal, size: UVec
     rend := &rend.(Vk_Renderer)
 }
 
-vk_renderer_submit_buffer :: proc(rend: ^Renderer_Internal, buffer: Command_Buffer_Internal) {
+vk_renderer_submit_pool :: proc(rend: ^Renderer_Internal, pool: ^Command_Pool_Internal) {
     rend := &rend.(Vk_Renderer)
-    buffer := buffer.(^Vk_Command_Buffer)
+    buffer := &pool.(Vk_Command_Pool)
 
+    // TODO: Rewrite, using secondary command buffers.
+    /*
     wait_semaphores := make([dynamic]vk.SemaphoreSubmitInfo)
     if rend.wait_semaphore.semaphore != 0 {
         append(&wait_semaphores, rend.wait_semaphore)
@@ -338,6 +336,7 @@ vk_renderer_submit_buffer :: proc(rend: ^Renderer_Internal, buffer: Command_Buff
     rend.wait_semaphore.semaphore = 0
     rend.signal_semaphore.semaphore = 0
     buffer.is_encoding = false
+    */
 }
 
 vk_renderer_register_main_pool :: proc(rend: ^Renderer_Internal, pool: ^Command_Pool_Internal) {

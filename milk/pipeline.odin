@@ -2,6 +2,7 @@ package milk
 
 import pt "platform"
 import "base:runtime"
+import "core:fmt"
 import "core:strings"
 import SDL "vendor:sdl3"
 
@@ -11,15 +12,15 @@ Pipeline_Asset :: struct {
 	commands: pt.Pipeline_Commands
 }
 
-pipeline_graphics_new :: proc(rend: ^Renderer, vert: Shader_Asset, frag: Shader_Asset) -> (out: Pipeline_Asset) {
+pipeline_graphics_new :: proc(buffer: Command_Buffer, vert: Shader_Asset, frag: Shader_Asset) -> (out: Pipeline_Asset) {
 	out.type = .Graphics
-	out.internal, out.commands = pt.pipeline_internal_graphics_new(&rend.internal, vert.internal, frag.internal)
+	out.internal, out.commands = pt.pipeline_internal_graphics_new(buffer.internal, vert.internal, frag.internal)
 
 	return
 }
 
-pipeline_destroy :: proc(rend: ^Renderer, pipeline: ^Pipeline_Asset) {
-	pipeline.commands.destroy(&rend.internal, &pipeline.internal)
+pipeline_destroy :: proc(buffer: Command_Buffer, pipeline: ^Pipeline_Asset) {
+	pipeline.commands.destroy(buffer.internal, &pipeline.internal)
 }
 
 @(private="file")
@@ -30,52 +31,40 @@ File_Suffix :: enum {
 	Geom,
 }
 
-pipeline_asset_load :: proc(server: ^Asset_Server, path: string) {
+pipeline_asset_load :: proc(scene: ^Scene, path: string) {
+	immediate_parent := file_get_parent_folder(path)
 	file_path := asset_get_full_path(path)
 	// Get directory of file
 	parent_folder := file_get_parent_folder(file_path)
 	file_name := file_get_name(file_path)
 	matching_files := file_search(parent_folder, file_name)
 
+	source_suffix := file_get_suffix(path)
+	type: pt.Pipeline_Type
+
+	if source_suffix == ".gfx" {
+		type = .Graphics
+	} else if source_suffix == ".comp" {
+		type = .Compute
+	}
+
 	files: [File_Suffix]string
 	suffixes_found: [dynamic]File_Suffix
 
 	for file in matching_files {
 		suffix := file_get_suffix(file)
-		if suffix == ".vert.spv" {
-			files[.Vert] = file
+		if suffix == ".gfx.vert" {
+			files[.Vert] = strings.concatenate({immediate_parent, file})
 			append(&suffixes_found, File_Suffix.Vert)
-		} else if suffix == ".frag.spv" {
-			files[.Frag] = file
+		} else if suffix == ".gfx.frag" {
+			files[.Frag] = strings.concatenate({immediate_parent, file})
 			append(&suffixes_found, File_Suffix.Frag)
-		} else if suffix == ".comp.spv" {
-			files[.Comp] = file
+		} else if suffix == ".comp" {
+			files[.Comp] = strings.concatenate({immediate_parent, file})
 			append(&suffixes_found, File_Suffix.Comp)
-		} else if suffix == ".geom.spv" {
-			files[.Geom] = file
+		} else if suffix == ".gfx.geom" {
+			files[.Geom] = strings.concatenate({immediate_parent, file})
 			append(&suffixes_found, File_Suffix.Geom)
-		}
-	}
-
-	// Enumerate through the found shaders and create pipeline(s)
-	type: pt.Pipeline_Type
-	outer: for suffix in suffixes_found {
-		switch suffix {
-			case .Comp: {
-				type = .Compute
-				break outer
-			}
-			case .Vert: {
-				fallthrough
-			}
-			case .Frag: {
-				// Found a fragment, vertex should exist too
-				type = .Graphics
-				break outer
-			}
-			case .Geom: {
-				// TODO: Implement geometry shader
-			}
 		}
 	}
 
@@ -84,7 +73,36 @@ pipeline_asset_load :: proc(server: ^Asset_Server, path: string) {
 			// TODO: Implement compute pipeline
 		}
 		case .Graphics: {
-			asset_add(server, path, pipeline_graphics_new(&server.ctx.renderer, asset_get(server, files[.Frag], Shader_Asset), asset_get(server, files[.Vert], Shader_Asset)))
+			asset_add(
+				scene, 
+				path, 
+				pipeline_graphics_new(
+					gfx_get_command_buffer(&scene.ctx.renderer), 
+					asset_get(scene, files[.Vert], Shader_Asset, true), 
+					asset_get(scene, files[.Frag], Shader_Asset, true)
+				),
+				Asset_Dependent {
+					dependencies = {
+						asset_load(scene, files[.Vert], Shader_Asset, true),
+						asset_load(scene, files[.Frag], Shader_Asset, true)
+					}
+				}
+			)
 		}
 	}
+
+	delete(suffixes_found)
+	delete(matching_files)
+}
+
+pipeline_asset_unload :: proc(scene: ^Scene, path: string) {
+	pipeline := asset_get(scene, path, Pipeline_Asset)
+
+	buffer := gfx_get_command_buffer(&scene.ctx.renderer)
+
+	pipeline_destroy(buffer, &pipeline)
+
+	storage := asset_server_get_storage(&scene.ctx.asset_server, Pipeline_Asset)
+
+	asset_storage_remove(storage, path, Pipeline_Asset)
 }

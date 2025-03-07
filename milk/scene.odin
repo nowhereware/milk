@@ -21,6 +21,8 @@ Scene :: struct {
     frame_count: u64,
     // The tasks registered to run.
     task_list: [dynamic]Task,
+    // A map of assets used by the Scene.
+    asset_map: map[string]struct {},
 
     scene_load: Scene_Load_Proc,
     scene_unload: Scene_Unload_Proc,
@@ -59,6 +61,9 @@ scene_add_module :: proc(scene: ^Scene, module: Module) {
     for task in module.tasks {
         append(&scene.task_list, task)
     }
+
+    // Delete the module's task list
+    delete(module.tasks)
 }
 
 // Adds a given task to a scene's module.
@@ -75,5 +80,6 @@ scene_destroy :: proc(scene: ^Scene) {
     }
 
     delete(scene.task_list)
+    delete(scene.asset_map)
     free(scene)
 }

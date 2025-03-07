@@ -10,6 +10,9 @@ import "core:sync"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
 
+@(thread_local)
+local_command_pool: Command_Pool
+
 Renderer :: struct {
     window: ^SDL.Window,
 
@@ -23,14 +26,14 @@ Renderer :: struct {
 
     // A list of graphics devices exposed by the system.
     devices: [dynamic]Graphics_Device,
-    // A map of command pools, indexed by thread id.
-    command_pools: map[int]Command_Pool,
-    // A queue of buffers that need to be submitted.
-    buffer_queue: queue.Queue(Command_Buffer),
+    // A queue of pools that need to be submitted.
+    pool_queue: queue.Queue(^Command_Pool),
     // A mutex to sync access to the queue
     buffer_mutex: sync.Mutex,
     // The clear color of the renderer
     clear_color: Color,
+    // The Viewport of the main window
+    primary_viewport: Viewport,
 }
 
 // Creates the Renderer.
@@ -76,22 +79,19 @@ renderer_new :: proc(conf: ^Context_Config) -> (out: Renderer) {
     }
 
     out.internal, out.commands, internal_devices = pt.renderer_internal_new(out.window, &rend_cfg)
-    queue.init(&out.buffer_queue)
+    queue.init(&out.pool_queue)
     out.commands.set_clear_color(&out.internal, conf.clear_color)
 
+    local_command_pool = command_pool_new(&out)
+
     // Register pool
-    pool := gfx_get_command_pool(&out)
-    out.commands.register_main_pool(&out.internal, &pool.internal)
+    out.commands.register_main_pool(&out.internal, &local_command_pool.internal)
 
     return
 }
 
 renderer_destroy :: proc(rend: ^Renderer) {
-    for _, &pool in rend.command_pools {
-        pool.commands.destroy(&pool.internal)
-    }
-    queue.destroy(&rend.buffer_queue)
-    delete(rend.command_pools)
+    queue.destroy(&rend.pool_queue)
 
     rend.commands.quit(&rend.internal)
     SDL.DestroyWindow(rend.window)
@@ -99,41 +99,31 @@ renderer_destroy :: proc(rend: ^Renderer) {
     for &device in rend.devices {
         graphics_device_destroy(&device)
     }
+    
     delete(rend.devices)
 }
 
 renderer_process_queue :: proc(rend: ^Renderer) {
-    for queue.len(rend.buffer_queue) != 0 {
-        buffer := queue.pop_back(&rend.buffer_queue)
-        rend.commands.submit_buffer(&rend.internal, buffer.internal)
+    sync.lock(&rend.buffer_mutex)
+    for queue.len(rend.pool_queue) != 0 {
+        pool := queue.pop_back(&rend.pool_queue)
+        rend.commands.submit_pool(&rend.internal, &pool.internal)
     }
+    sync.unlock(&rend.buffer_mutex)
 }
 
 renderer_set_clear_color :: proc(rend: ^Renderer, color: Color) {
     rend.clear_color = color
 }
 
-gfx_get_command_pool :: proc(rend: ^Renderer) -> ^Command_Pool {
-    thread_id := os.current_thread_id()
-
-    if thread_id not_in rend.command_pools {
-        rend.command_pools[thread_id] = command_pool_new(rend)
-    }
-
-    return &rend.command_pools[thread_id]
-}
-
 gfx_get_command_buffer :: proc(rend: ^Renderer) -> Command_Buffer {
-    pool := gfx_get_command_pool(rend)
-    return command_pool_acquire(rend, pool)
+    return command_pool_acquire(rend, &local_command_pool)
 }
 
-gfx_submit_buffer :: proc(rend: ^Renderer, buffer: Command_Buffer) {
-    // End the buffer
-    buffer.commands.end(buffer.internal)
-    // Acquire a lock on the buffer queue and push the buffer to the queue
+gfx_submit_pool :: proc(rend: ^Renderer, pool: ^Command_Pool) {
+    // Acquire a lock on the pool queue and push the pool to the queue
     sync.lock(&rend.buffer_mutex)
-    queue.push(&rend.buffer_queue, buffer)
+    queue.push(&rend.pool_queue, pool)
     sync.unlock(&rend.buffer_mutex)
 }
 
@@ -141,11 +131,8 @@ gfx_get_swapchain_texture :: proc(rend: ^Renderer) -> pt.Texture_Internal {
     return rend.commands.get_swapchain_texture(&rend.internal)
 }
 
-gfx_begin_draw :: proc(
-    rend: ^Renderer,
-    buffer: Command_Buffer,
-) {
-    buffer.commands.begin_draw(&rend.internal, buffer.internal)
+gfx_get_primary_viewport :: proc(rend: ^Renderer) -> ^Viewport {
+    return &rend.primary_viewport
 }
 
 
@@ -159,13 +146,7 @@ renderer_window_resized :: proc(rend: ^Renderer, size: UVector2) {
 }
 
 renderer_begin :: proc(rend: ^Renderer) {
-    rend.commands.begin(
-        &rend.internal
-    )
-}
-
-renderer_bind_graphics_pipeline :: proc(rend: ^Renderer, pipeline: ^Pipeline_Asset) {
-    rend.commands.bind_graphics_pipeline(&rend.internal, &pipeline.internal)
+    rend.commands.begin(&rend.internal)
 }
 
 renderer_end :: proc(rend: ^Renderer) {

@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import vk "vendor:vulkan"
-import "shared:vma"
+import "../../lib/vma"
 
 vkcheck :: proc(result: vk.Result, message: string = "", loc := #caller_location) {
     if result != .SUCCESS {

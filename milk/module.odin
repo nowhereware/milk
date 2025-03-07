@@ -39,9 +39,19 @@ Transform_State :: struct {
 
 // Creates a new Transform state by copying the old Transform state.
 transform_state_new :: proc(t2d_ptr: ^Storage, t3d_ptr: ^Storage) -> (out: Transform_State) {
-    out.t2d = ecs_storage_copy(t2d_ptr)
-    out.t3d = ecs_storage_copy(t3d_ptr)
+    ecs_storage_copy(t2d_ptr, &out.t2d)
+    ecs_storage_copy(t3d_ptr, &out.t3d)
     return
+}
+
+transform_state_update :: proc(world: ^World, state: ^Transform_State) {
+    ecs_storage_copy(world_get_storage(world, Transform_2D), &state.t2d)
+    ecs_storage_copy(world_get_storage(world, Transform_3D), &state.t3d)
+}
+
+transform_state_destroy :: proc(state: ^Transform_State) {
+    ecs_storage_destroy(&state.t2d)
+    ecs_storage_destroy(&state.t3d)
 }
 
 // Gets a list of Transform_2D(s) from a state and a list of query entities.
@@ -146,6 +156,10 @@ module_new_with_tasks :: proc(task_list: [dynamic]Task) -> (out: Module) {
     out.tasks = task_list
 
     return
+}
+
+module_add_task :: proc(module: ^Module, task: Task) {
+    append(&module.tasks, task)
 }
 
 module_destroy :: proc(module: ^Module) {

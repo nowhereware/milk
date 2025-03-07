@@ -3,6 +3,7 @@ package milk_platform
 import "core:fmt"
 import vk "vendor:vulkan"
 
+// TODO: Update this
 VERTEX_BINDING := vk.VertexInputBindingDescription {
 	binding = 0,
 	stride = size_of(Vertex),
@@ -14,20 +15,14 @@ VERTEX_ATTRIBUTES := [?]vk.VertexInputAttributeDescription {
 		binding = 0,
 		location = 0,
 		format = .R32G32_SFLOAT,
-		offset = cast(u32)offset_of(Vertex, pos)
+		offset = cast(u32)offset_of(Vertex, position)
 	},
 	{
 		binding = 0,
 		location = 1,
 		format = .R32G32B32_SFLOAT,
-		offset = cast(u32)offset_of(Vertex, color)
+		offset = cast(u32)offset_of(Vertex, uv)
 	}
-}
-
-Uniform_Buffer_Object :: struct {
-	model: Mat4,
-	view: Mat4,
-	proj: Mat4
 }
 
 // # Vk Pipeline
@@ -41,8 +36,8 @@ Vk_Pipeline :: struct {
 	pipeline_layout: vk.PipelineLayout,
 }
 
-vk_pipeline_graphics_new :: proc(rend: ^Renderer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> Pipeline_Internal {
-	rend := &rend.(Vk_Renderer)
+vk_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> Pipeline_Internal {
+	buffer := buffer.(^Vk_Command_Buffer)
 	vert := vert.(Vk_Shader)
 	frag := frag.(Vk_Shader)
 
@@ -62,12 +57,14 @@ vk_pipeline_graphics_new :: proc(rend: ^Renderer_Internal, vert: Shader_Internal
 		pBindings = &ubo_layout_binding,
 	}
 
-	result := vk.CreateDescriptorSetLayout(rend.device, &layout_info, nil, &out.descriptor_set_layout)
+	//result := vk.CreateDescriptorSetLayout(buffer.device, &layout_info, nil, &out.descriptor_set_layout)
 
+	/*
 	if result != .SUCCESS {
 		fmt.println(result)
 		panic("Failed to create descriptor set layout!")
 	}
+	*/
 
 	shader_create_infos := make([dynamic]vk.ShaderCreateInfoEXT)
 	append(&shader_create_infos, vk.ShaderCreateInfoEXT {
@@ -104,7 +101,7 @@ vk_pipeline_graphics_new :: proc(rend: ^Renderer_Internal, vert: Shader_Internal
 		pSpecializationInfo = nil
 	})
 
-	vkcheck(vk.CreateShadersEXT(rend.device, 2, raw_data(shader_create_infos), nil, raw_data(out.shaders)), "Failed to create pipeline!")
+	//vkcheck(vk.CreateShadersEXT(rend.device, 2, raw_data(shader_create_infos), nil, raw_data(out.shaders)), "Failed to create pipeline!")
 
 	out.stages = {
 		.VERTEX,
@@ -114,15 +111,15 @@ vk_pipeline_graphics_new :: proc(rend: ^Renderer_Internal, vert: Shader_Internal
 	return out
 }
 
-vk_pipeline_destroy :: proc(rend: ^Renderer_Internal, pipeline: ^Pipeline_Internal) {
-	rend := &rend.(Vk_Renderer)
+vk_pipeline_destroy :: proc(buffer: Command_Buffer_Internal, pipeline: ^Pipeline_Internal) {
+	buffer := buffer.(^Vk_Command_Buffer)
 	pipeline := &pipeline.(Vk_Pipeline)
 
-	vk.DeviceWaitIdle(rend.device)
+	//vk.DeviceWaitIdle(rend.device)
 
-	vk.DestroyDescriptorSetLayout(rend.device, pipeline.descriptor_set_layout, nil)
+	//vk.DestroyDescriptorSetLayout(rend.device, pipeline.descriptor_set_layout, nil)
 	
 	for shader in pipeline.shaders {
-		vk.DestroyShaderEXT(rend.device, shader, nil)
+		//vk.DestroyShaderEXT(rend.device, shader, nil)
 	}
 }

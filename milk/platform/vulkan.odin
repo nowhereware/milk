@@ -6,7 +6,7 @@ import "core:mem"
 import "core:strings"
 import vk "vendor:vulkan"
 import SDL "vendor:sdl3"
-import "shared:vma"
+import "../../lib/vma"
 
 when ODIN_DEBUG {
     ENABLE_LAYERS :: true

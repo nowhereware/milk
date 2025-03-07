@@ -1,9 +1,13 @@
 package milk_platform
 
+import "core:fmt"
+
 shader_new_proc :: proc(rend: ^Renderer_Internal, src: []u8) -> Shader_Internal
+shader_destroy_proc :: proc(shader: ^Shader_Internal)
 
 Shader_Commands :: struct {
-    new: shader_new_proc
+    new: shader_new_proc,
+    destroy: shader_destroy_proc,
 }
 
 Shader_Internal :: union {
@@ -18,6 +22,7 @@ shader_internal_new :: proc(rend: ^Renderer_Internal, src: []u8) -> (internal: S
         }
         case Gl_Renderer: {
             commands.new = gl_shader_new
+            commands.destroy = gl_shader_destroy
         }
     }
 

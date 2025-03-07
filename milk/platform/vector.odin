@@ -24,6 +24,7 @@ Point_3D :: Vector3
 Mat4 :: glsl.mat4
 
 Vertex :: struct {
-	pos: Point_2D,
-	color: Vector3
+	position: Point_3D,
+	uv: Vector2,
+	normal: Vector3,
 }

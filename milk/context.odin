@@ -51,6 +51,8 @@ Context :: struct {
     renderer: Renderer,
     // The asset server
     asset_server: Asset_Server,
+    // The input state
+    input_state: Input_State,
 
     // Application state
 
@@ -67,6 +69,10 @@ Context :: struct {
     task_queue: queue.Queue(Task),
     // The timestep of the application
     timestep: Timestep,
+    // A list of thread-local profilers, submitted at the end.
+    thread_profilers: [dynamic]Profiler,
+    // A mutex to access the thread profilers.
+    thread_profiler_mutex: sync.Mutex,
 
     // User data
 
@@ -76,7 +82,7 @@ Context :: struct {
 
 // Creates and returns a new Context, while also initializing subsystems
 context_new :: proc(conf: ^Context_Config) -> (out: Context) {
-    flags: SDL.InitFlags = SDL.INIT_VIDEO
+    flags: SDL.InitFlags = SDL.INIT_VIDEO + SDL.INIT_GAMEPAD + SDL.INIT_AUDIO
 
     // Init subsystems
     if (!SDL.Init(flags)) {
@@ -85,18 +91,19 @@ context_new :: proc(conf: ^Context_Config) -> (out: Context) {
     }
 
     out.renderer = renderer_new(conf)
-    out.asset_server = asset_server_new(&out)
+    out.asset_server = asset_server_new()
+    out.input_state = input_state_new()
 
     // Register builtin assets
-    asset_server_register_type(&out.asset_server, Shader_Asset, shader_asset_load)
-    asset_server_register_type(&out.asset_server, Pipeline_Asset, pipeline_asset_load)
+    asset_server_register_type(&out.asset_server, Shader_Asset, shader_asset_load, shader_asset_unload)
+    asset_server_register_type(&out.asset_server, Pipeline_Asset, pipeline_asset_load, pipeline_asset_unload)
 
     out.update_fps = conf.fps
 
     out.should_quit = false
     out.should_render = true
 
-    thread_profiler_pool = {}
+    local_profiler = profiler_new()
 
     return
 }
@@ -115,12 +122,25 @@ context_change_scene_to :: proc(ctx: ^Context, scene: ^Scene) {
     old_scene := ctx.scene
     ctx.scene = scene
     old_scene.scene_unload(old_scene)
+
+    for asset in old_scene.asset_map {
+        if asset not_in scene.asset_map {
+            asset_unload(scene, asset)
+        }
+    }
+
+    // Ensure our commands are processed
+    gfx_submit_pool(&ctx.renderer, &local_command_pool)
+
     scene_destroy(old_scene)
 }
 
 // Sets the scene for the context to start with, given that the scene has already been loaded
 context_set_startup_scene :: proc(ctx: ^Context, scene: ^Scene) {
     ctx.scene = scene
+    // Upload and process command pool
+    gfx_submit_pool(&ctx.renderer, &local_command_pool)
+    renderer_process_queue(&ctx.renderer)
 }
 
 // Sets the framerate of the context, given a value of frames to run per second
@@ -156,13 +176,23 @@ context_run :: proc(ctx: ^Context) {
         worker.transform_state = &trans_state
     }
 
-    task_profiler := profile_get(thread_profiler(), "TASK_RUN_PROFILER")
-
     worker_pool_start(&worker_pool)
 
+    task_profiler := profile_get(&local_profiler, "TASK_RUN_PROFILER")
+
     run_loop: for !ctx.should_quit {
-        profile_start(task_profiler)
-        profile_set_user_data(task_profiler, ctx.scene.frame_count)
+        profile_start(&task_profiler)
+
+        // Update fixed timestep
+        ctx.timestep.frame_duration = time.duration_seconds(time.tick_since(prev_time))
+        //fmt.println(1 / ctx.timestep.frame_duration)
+        prev_time = time.tick_now()
+
+        // Get the alpha leftover for draw tasks
+        ctx.timestep.accumulator += ctx.timestep.frame_duration
+        UPDATE_FRAME: bool = (ctx.timestep.accumulator >= ctx.update_fps)
+        profile_set_user_data(&task_profiler, ctx.scene.frame_count, UPDATE_FRAME)
+
         // Poll events
         for SDL.PollEvent(&event) {
             #partial switch event.type {
@@ -190,22 +220,38 @@ context_run :: proc(ctx: ^Context) {
                 case .WINDOW_RESTORED: {
                     ctx.should_render = true
                 }
+                case .GAMEPAD_ADDED: {
+                    input_state_add_gamepad(&ctx.input_state, event.gdevice.which)
+                }
+                case .GAMEPAD_REMOVED: {
+                    input_state_remove_gamepad(&ctx.input_state, event.gdevice.which)
+                }
+                case .GAMEPAD_BUTTON_DOWN: {
+                    id := event.gdevice.which
+                    
+                    ctx.input_state.gamepads[ctx.input_state.gamepad_map[id]].accumulated[event.gbutton.button] = true
+                }
+                case .GAMEPAD_BUTTON_UP: {
+                    id := event.gdevice.which
+
+                    ctx.input_state.gamepads[ctx.input_state.gamepad_map[id]].accumulated[event.gbutton.button] = false
+                }
             }
         }
 
-        take_step(task_profiler, "Poll Events")
+        take_step(&task_profiler, "Poll Events")
         
         if !ctx.should_render {
             time.sleep(100 * time.Millisecond)
             continue
         }
 
-        ctx.timestep.frame_duration = time.duration_seconds(time.tick_since(prev_time))
-        //fmt.println(1 / ctx.timestep.frame_duration)
-        prev_time = time.tick_now()
-
-        // Get the alpha leftover for draw tasks
-        ctx.timestep.accumulator += ctx.timestep.frame_duration
+        if UPDATE_FRAME {
+            // An update frame will run, update the transform state to match old transforms.
+            transform_state_update(&ctx.scene.world, &trans_state)
+            // Also update the input state
+            input_state_update(&ctx.input_state)
+        }
 
         temp_accumulator := ctx.timestep.accumulator
         for temp_accumulator >= ctx.update_fps {
@@ -216,16 +262,16 @@ context_run :: proc(ctx: ^Context) {
 
         worker_pool_init_queue(&worker_pool, ctx.scene.task_list[:])
 
-        take_step(task_profiler, "Add Modules")
+        take_step(&task_profiler, "Add Modules")
 
         renderer_begin(&ctx.renderer)
 
-        take_step(task_profiler, "Renderer Begin")
+        take_step(&task_profiler, "Renderer Begin")
 
         // Synchronized start
         sync.barrier_wait(&worker_pool.sync)
 
-        take_step(task_profiler, "Barrier Begin")
+        take_step(&task_profiler, "Barrier Begin")
 
         // TODO: Asset hot-reloading
 
@@ -237,16 +283,16 @@ context_run :: proc(ctx: ^Context) {
         // Ensure we don't miss a buffer at the last wait
         renderer_process_queue(&ctx.renderer)
 
-        take_step(task_profiler, "Process Tasks")
+        take_step(&task_profiler, "Process Tasks")
 
         // Synchronized end
         sync.barrier_wait(&worker_pool.sync)
 
-        take_step(task_profiler, "Barrier End")
+        take_step(&task_profiler, "Barrier End")
 
         renderer_end(&ctx.renderer)
 
-        take_step(task_profiler, "Renderer End")
+        take_step(&task_profiler, "Renderer End")
 
         for ctx.timestep.accumulator >= ctx.update_fps {
             ctx.timestep.accumulator -= ctx.update_fps
@@ -258,56 +304,54 @@ context_run :: proc(ctx: ^Context) {
         // Clear the done list
         worker_pool_clear_done(&worker_pool)
 
-        // Update Transform State to match the current frame before proceeding to the next
-        // Clear out the state before making another one.
-        trans_state = transform_state_new(world_get_storage(&ctx.scene.world, Transform_2D), world_get_storage(&ctx.scene.world, Transform_3D))
-
         ctx.scene.frame_count += 1
 
-        take_step(task_profiler, "End Run")
+        take_step(&task_profiler, "End Run")
 
-        profile_end(task_profiler)
+        profile_end(&task_profiler)
     }
 
     ctx.scene.scene_unload(ctx.scene)
+
+    for asset in ctx.scene.asset_map {
+        fmt.println("Unloading", asset)
+        asset_unload(ctx.scene, asset)
+    }
+
+    // Submit our local command pool
+    gfx_submit_pool(&ctx.renderer, &local_command_pool)
+
+    // Process all command pools
+    renderer_process_queue(&ctx.renderer)
+
+    transform_state_destroy(&trans_state)
 
     scene_destroy(ctx.scene)
 
     // End internal stuff
     renderer_destroy(&ctx.renderer)
 
+    // Indicate to threads that the loop is over
     worker_pool_join(&worker_pool)
     worker_pool_destroy(&worker_pool)
+
+    input_state_destroy(&ctx.input_state)
 
     // Last step: End subsystems
     SDL.Quit()
 
-    // Print profiles
-    thread_profilers: [dynamic]Profiler
-    for _, profiler in thread_profiler_pool {
-        append(&thread_profilers, profiler)
-    }
-    
-    profiler_list := make([dynamic]Profiler)
+    // Print profilers
+    append(&ctx.thread_profilers, local_profiler)
+    condensed_profiler := condense_profilers(..ctx.thread_profilers[:])
 
-    for _, profiler in thread_profiler_pool {
-        append(&profiler_list, profiler)
-    }
-
-    condensed_profiler := condense_profilers(..profiler_list[:])
-
-    //print_profiles(&condensed_profiler)
+    print_profiles(&condensed_profiler)
     profiler_destroy(&condensed_profiler)
 
-    print_profiles(thread_profiler())
-
-    for _, &profiler in thread_profiler_pool {
+    for &profiler in ctx.thread_profilers {
         profiler_destroy(&profiler)
     }
 
-    delete(profiler_list)
-    delete(thread_profilers)
-    delete(thread_profiler_pool)
+    delete(ctx.thread_profilers)
 
     asset_server_destroy(&ctx.asset_server)
 

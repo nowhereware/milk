@@ -1,6 +1,13 @@
 # Milk Engine
 A general-purpose game engine written entirely in Odin.
 
+## Notice
+Milk is currently in a *very* pre-alpha state. While most of the described functionality below is available in a form, it's not widely tested and may have breaking bugs depending on platform.
+Symbols may regularly change name, location, or functionality, so keep an eye on what runs and keep Odin happy.
+
+The areas that need the most work as of writing are the modules, which are not as feature-complete as desired. Additionally, most of the core milk/ folder could probably do with another
+pass on organization. However, the engine is still usable for the most part and most of the core organization has been set, although contributions are welcome!
+
 ## Design
 Milk is designed to be endlessly upgradable. All modules within Milk (located in the /mod folder) can be enabled or disabled at will, and swapped out when desired for your own needs.
 The core of the engine is built off of SDL3, a custom multi-backend renderer (currently just Vulkan), and a complete sparse-set ECS implementation. The engine also includes a complete

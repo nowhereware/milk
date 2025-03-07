@@ -1,5 +1,7 @@
 package milk
 
+import "core:crypto"
+import "core:encoding/uuid"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -8,7 +10,8 @@ import "core:sync"
 
 ASSET_PREFIX :: "assets/"
 
-asset_load_proc :: #type proc(server: ^Asset_Server, path: string)
+asset_loader_proc :: #type proc(scene: ^Scene, path: string)
+asset_unloader_proc :: #type proc(scene: ^Scene, path: string)
 
 // # Asset_Server
 // A server used to access assets of variable but preregistered types. Stored within the server
@@ -17,16 +20,18 @@ asset_load_proc :: #type proc(server: ^Asset_Server, path: string)
 // component types), or the direct server and a filepath, along with the type of the desired asset.
 Asset_Server :: struct {
     type_map: map[typeid]int,
+    asset_map: map[string]Asset_Handle,
     storages: [dynamic]Asset_Storage,
-    load_procs: [dynamic]asset_load_proc,
-    ctx: ^Context,
+    load_procs: [dynamic]asset_loader_proc,
+    unload_procs: [dynamic]asset_unloader_proc,
 }
 
-asset_server_new :: proc(ctx: ^Context) -> (out: Asset_Server) {
+asset_server_new :: proc() -> (out: Asset_Server) {
     out.type_map = {}
+    out.asset_map = {}
     out.storages = make([dynamic]Asset_Storage)
-    out.load_procs = make([dynamic]asset_load_proc)
-    out.ctx = ctx
+    out.load_procs = make([dynamic]asset_loader_proc)
+    out.unload_procs = make([dynamic]asset_unloader_proc)
 
     return
 }
@@ -40,9 +45,15 @@ asset_server_destroy :: proc(server: ^Asset_Server) {
 
     delete(server.storages)
     delete(server.load_procs)
+    delete(server.unload_procs)
+    delete(server.asset_map)
 }
 
-asset_server_register_type :: proc(server: ^Asset_Server, $T: typeid, load_proc: asset_load_proc) {
+asset_server_get_storage :: proc(server: ^Asset_Server, $T: typeid) -> ^Asset_Storage {
+    return &server.storages[server.type_map[typeid_of(T)]]
+}
+
+asset_server_register_type :: proc(server: ^Asset_Server, $T: typeid, load_proc: asset_loader_proc, unload_proc: asset_unloader_proc) {
     id := typeid_of(T)
     if id in server.type_map {
         // Type already is registered, return
@@ -52,61 +63,144 @@ asset_server_register_type :: proc(server: ^Asset_Server, $T: typeid, load_proc:
     append(&server.storages, asset_storage_new(T))
     server.type_map[id] = len(server.storages) - 1
     append(&server.load_procs, load_proc)
+    append(&server.unload_procs, unload_proc)
 }
 
 // # Asset_Handle
-// A handle to an asset of an unknown type, via a pointer to its server and its filepath.
+// A handle to an asset of an unknown type, via a pointer to its context and its filepath.
 // When this handle is actually used, the data given is of the correct type at the path.
 Asset_Handle :: struct {
-    server: ^Asset_Server,
+    ctx: ^Context,
     path: string,
     id: typeid,
+    allocated_path: bool,
 }
 
-// Creates a new Asset Handle by validating that the desired data exists and returning the
-// handle.
-asset_get_handle :: proc(server: ^Asset_Server, path: string, $T: typeid) -> Asset_Handle {
-    if !asset_exists(server, path, T) {
-        asset_get(server, path, T)
+// Ensures that a desired asset is loaded and returns an Asset_Handle
+asset_load :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := false) -> Asset_Handle {
+    if path not_in scene.asset_map {
+        scene.asset_map[path] = {}
     }
 
-    return {
-        server = server,
-        path = path,
-        id = typeid_of(T)
+    if !asset_exists(&scene.ctx.asset_server, path) {
+        _asset_load(scene, path, T)
     }
+
+    handle := &scene.ctx.asset_server.asset_map[path]
+    handle.allocated_path = allocated_path
+
+    return scene.ctx.asset_server.asset_map[path]
 }
 
-Asset_Type :: enum {
-    Dependent,
-    File,
+// Ensures that a desired asset is loaded.
+asset_preload :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := false) {
+    if path not_in scene.asset_map {
+        scene.asset_map[path] = {}
+    }
+
+    if !asset_exists(&scene.ctx.asset_server, path, T) {
+        _asset_load(scene.ctx, path, T)
+    }
+
+    handle := &scene.ctx.asset_server.asset_map[path]
+    handle.allocated_path = allocated_path
 }
 
-@(private)
-Asset_Internal_Type :: union {
+// # Asset Type
+// A union determining the type of an asset. Used when hot reloading.
+Asset_Type :: union {
     Asset_Dependent,
-    Asset_File
+    Asset_File,
+    Asset_Standalone,
 }
 
+// # Asset Dependent
+// An asset that is typically loaded from and dependent on multiple sub-assets.
 Asset_Dependent :: struct {
-    dependencies: [dynamic]Asset_Handle,
+    dependencies: []Asset_Handle,
 }
 
+// # Asset File
+// An asset that is typically loaded from a file.
 Asset_File :: struct {
     last_time: os.File_Time,
     full_path: string,
     id: typeid,
 }
 
+// # Asset Standalone
+// An asset that is typically loaded at runtime and is not dependent on any pre-existing data.
+Asset_Standalone :: struct {}
+
+
+// Creates an allocated name string using a UUID. Should ideally be only used with Asset_Standalone(s).
+asset_generate_name :: proc() -> string {
+    id: uuid.Identifier
+
+    {
+        context.random_generator = crypto.random_generator()
+        id = uuid.generate_v7()
+    }
+
+    out: string
+    err: mem.Allocator_Error
+
+    {
+        context.allocator = context.temp_allocator
+        out, err = uuid.to_string_allocated(id, context.temp_allocator)
+    }
+
+    if err != .None {
+        fmt.println(err)
+        panic("Failed to generate unique name!")
+    }
+
+    return strings.clone(out)
+}
+
 // TODO: Implement hot-reloading
 Asset_Tracker :: struct {
     index: int,
     mutex: sync.Mutex,
-    type: Asset_Internal_Type,
+    type: Asset_Type,
     id: typeid,
 }
 
-_asset_reload :: proc(server: ^Asset_Server, tracker: ^Asset_Tracker) {
+@(private)
+_asset_load :: proc(scene: ^Scene, path: string, $T: typeid, loc := #caller_location) {
+    id := typeid_of(T)
+
+    if id not_in scene.ctx.asset_server.type_map {
+        panic("Error, asset types must be registered before use!", loc = loc)
+    }
+
+    storage := asset_server_get_storage(&scene.ctx.asset_server, T)
+    outer: if path not_in storage.path_map {
+        for !sync.mutex_try_lock(&storage.access_mutex) {
+            if path in storage.path_map {
+                break outer
+            }
+        }
+
+        storage.path_map[path] = {}
+        tracker := &storage.path_map[path]
+        
+        sync.mutex_unlock(&storage.access_mutex)
+        // Load the asset
+        for !sync.mutex_try_lock(&tracker.mutex) {
+            if path in storage.path_map {
+                break outer
+            }
+        }
+
+        scene.ctx.asset_server.load_procs[scene.ctx.asset_server.type_map[id]](scene, path)
+
+        sync.mutex_unlock(&tracker.mutex)
+    }
+}
+
+@(private)
+_asset_reload :: proc(scene: ^Scene, tracker: ^Asset_Tracker) {
     sync.mutex_lock(&tracker.mutex)
 
     switch type in tracker.type {
@@ -114,7 +208,10 @@ _asset_reload :: proc(server: ^Asset_Server, tracker: ^Asset_Tracker) {
 
         }
         case Asset_File: {
-            server.load_procs[server.type_map[tracker.id]](server, asset_get_full_path(server.storages[server.type_map[tracker.id]].index_map[tracker.index]))
+            scene.ctx.asset_server.load_procs[scene.ctx.asset_server.type_map[tracker.id]](scene, scene.ctx.asset_server.storages[scene.ctx.asset_server.type_map[tracker.id]].index_map[tracker.index])
+        }
+        case Asset_Standalone: {
+
         }
     }
 
@@ -133,6 +230,7 @@ Asset_Storage :: struct {
     id: typeid,
     path_map: map[string]Asset_Tracker,
     index_map: [dynamic]string,
+    access_mutex: sync.Mutex,
 }
 
 asset_storage_new :: proc($T: typeid) -> (out: Asset_Storage) {
@@ -152,17 +250,10 @@ asset_storage_destroy :: proc(storage: ^Asset_Storage) {
     delete(storage.index_map)
 }
 
-asset_storage_add :: proc(storage: ^Asset_Storage, path: string, data: $T) {
+asset_storage_add :: proc(storage: ^Asset_Storage, path: string, data: $T, type: Asset_Type = Asset_File {}) {
     if path in storage.path_map {
         // Data already exists, just update the data at the path instead.
         asset_storage_update(storage, path, data)
-    }
-    
-    last_time, err := os.last_write_time_by_name(asset_get_full_path(path))
-
-    if err != nil {
-        fmt.println(err)
-        panic("Error: failed to get last write time!")
     }
 
     index := storage.length
@@ -170,6 +261,28 @@ asset_storage_add :: proc(storage: ^Asset_Storage, path: string, data: $T) {
     tracker.index = index
     tracker.id = storage.id
     storage.path_map[path] = tracker
+
+    type := type
+    switch &t in type {
+        case Asset_File: {
+            t.id = typeid_of(T)
+            err: os.Error
+            t.last_time, err = os.last_write_time_by_name(t.full_path)
+
+            if err != nil {
+                fmt.println(err)
+                panic("Error: failed to get last write time!")
+            }
+
+            tracker.type = t
+        }
+        case Asset_Dependent: {
+            tracker.type = type
+        }
+        case Asset_Standalone: {
+            tracker.type = type
+        }
+    }
 
     if index == storage.cap {
         // About to expand past the cap, time to resize
@@ -205,6 +318,16 @@ asset_storage_get :: proc(storage: ^Asset_Storage, path: string, $T: typeid, loc
     return d[storage.path_map[path].index]
 }
 
+asset_storage_get_ptr :: proc(storage: ^Asset_Storage, path: string, $T: typeid, loc := #caller_location) -> ^T {
+    if path not_in storage.path_map {
+        // We should have already loaded the asset
+        panic("Asset is not loaded!", loc = loc)
+    }
+
+    d := cast([^]T)storage.data
+    return &d[storage.path_map[path].index]
+}
+
 asset_storage_remove :: proc(storage: ^Asset_Storage, path: string, $T: typeid) {
     if path not_in storage.path_map {
         // Asset doesn't exist, return
@@ -222,7 +345,17 @@ asset_storage_remove :: proc(storage: ^Asset_Storage, path: string, $T: typeid) 
     storage.length -= 1
 
     unordered_remove(&storage.index_map, old_index)
-    storage.path_map[new_asset] = old_index
+    new_asset_tracker := storage.path_map[new_asset]
+    new_asset_tracker.index = old_index
+    storage.path_map[new_asset] = new_asset_tracker
+
+    #partial switch t in storage.path_map[path].type {
+        case Asset_Standalone: {
+            fmt.println("Deleting path:", path)
+            delete(path)
+        }
+    }
+
     delete_key(&storage.path_map, path)
 }
 
@@ -232,44 +365,43 @@ asset_get :: proc {
 }
 
 asset_get_from_handle :: proc(handle: ^Asset_Handle, $T: typeid, loc := #caller_location) -> T {
-    return asset_get_from_path(handle.server, handle.path, T, loc)
+    return asset_get_from_path(handle.ctx.scene, handle.path, T, loc = loc)
 }
 
-asset_get_from_path :: proc(server: ^Asset_Server, path: string, $T: typeid, loc := #caller_location) -> T {
-    id := typeid_of(T)
-
-    if id not_in server.type_map {
-        panic("Error, asset types must be registered before use!", loc = loc)
+asset_get_from_path :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := false, loc := #caller_location) -> T {
+    if path not_in scene.asset_map {
+        fmt.println("Loaded path:", path)
+        scene.asset_map[path] = {}
     }
 
-    storage := &server.storages[server.type_map[id]]
-    outer: if path not_in storage.path_map {
-        storage.path_map[path] = {}
-        tracker := &storage.path_map[path]
-        // Load the asset
-        for !sync.mutex_try_lock(&tracker.mutex) {
-            if path in storage.path_map {
-                break outer
-            }
-        }
-
-        server.load_procs[server.type_map[id]](server, path)
-
-        sync.mutex_unlock(&tracker.mutex)
+    if !asset_exists(&scene.ctx.asset_server, path) {
+        _asset_load(scene, path, T)
     }
+
+    handle := &scene.ctx.asset_server.asset_map[path]
+    handle.allocated_path = allocated_path
+
+    storage := &scene.ctx.asset_server.storages[scene.ctx.asset_server.type_map[typeid_of(T)]]
 
     return asset_storage_get(storage, path, T, loc)
 }
 
-asset_add :: proc(server: ^Asset_Server, path: string, data: $T, loc := #caller_location) {
+asset_add :: proc(scene: ^Scene, path: string, data: $T, type: Asset_Type = Asset_File {}, loc := #caller_location) {
     id := typeid_of(T)
 
-    if id not_in server.type_map {
+    if id not_in scene.ctx.asset_server.type_map {
         panic("Error, asset types must be registered before use!", loc = loc)
     }
 
-    storage := &server.storages[server.type_map[id]]
-    asset_storage_add(storage, path, data)
+    storage := &scene.ctx.asset_server.storages[scene.ctx.asset_server.type_map[id]]
+    asset_storage_add(storage, path, data, type)
+
+    scene.ctx.asset_server.asset_map[path] = Asset_Handle {
+        ctx = scene.ctx,
+        path = path,
+        id = id,
+        allocated_path = false,
+    }
 }
 
 asset_update :: proc(server: ^Asset_Server, path: string, data: $T, loc := #caller_location) {
@@ -289,8 +421,13 @@ asset_get_full_path :: proc(path: string, allocator := context.temp_allocator) -
     return strings.concatenate(path_slice[:], allocator)
 }
 
-asset_exists :: proc(server: ^Asset_Server, path: string, $T: typeid, loc := #caller_location) -> bool {
-    id := typeid_of(T)
+asset_exists :: proc(server: ^Asset_Server, path: string, loc := #caller_location) -> bool {
+    if path not_in server.asset_map {
+        return false
+    }
+
+    id := server.asset_map[path].id
+
     if id not_in server.type_map {
         panic("Error, asset types must be registered before use!", loc)
     }
@@ -302,4 +439,18 @@ asset_exists :: proc(server: ^Asset_Server, path: string, $T: typeid, loc := #ca
     }
 
     return true
+}
+
+asset_unload :: proc(scene: ^Scene, path: string) {
+    if path not_in scene.ctx.asset_server.asset_map {
+        return
+    }
+
+    scene.ctx.asset_server.unload_procs[scene.ctx.asset_server.type_map[scene.ctx.asset_server.asset_map[path].id]](scene, path)
+
+    if scene.ctx.asset_server.asset_map[path].allocated_path {
+        defer delete(path)
+    }
+
+    delete_key(&scene.ctx.asset_server.asset_map, path)
 }

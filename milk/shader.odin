@@ -1,6 +1,7 @@
 package milk
 
 import pt "platform"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -24,15 +25,26 @@ shader_new :: proc(rend: ^Renderer, src: []u8) -> (out: Shader_Asset) {
     return
 }
 
-shader_asset_load :: proc(server: ^Asset_Server, path: string) {
-    // Find the file.
+shader_asset_load :: proc(scene: ^Scene, path: string) {
     file_path := asset_get_full_path(path)
+    fmt.println("Shader loading:", path)
+    data := file_get(file_path)
 
-    data, ok := file_get(file_path)
+    info, i_err := os.stat(file_path, context.temp_allocator)
 
-    if !ok {
-        panic("Failed to read shader asset file!")
-    }
+    asset_add(scene, path, shader_new(&scene.ctx.renderer, data[:]), type = Asset_File {
+        full_path = info.fullpath
+    })
+}
 
-    asset_add(server, path, shader_new(&server.ctx.renderer, data))
+shader_asset_unload :: proc(scene: ^Scene, path: string) {
+    storage := &scene.ctx.asset_server.storages[scene.ctx.asset_server.type_map[typeid_of(Shader_Asset)]]
+
+    fmt.println("Deleting shader.")
+
+    shader := asset_storage_get(storage, path, Shader_Asset)
+
+    shader.commands.destroy(&shader.internal)
+
+    asset_storage_remove(storage, path, Shader_Asset)
 }
