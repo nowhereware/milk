@@ -1,11 +1,13 @@
 package milk_platform
 
 pipeline_graphics_new_proc :: proc(buffer: Command_Buffer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> Pipeline_Internal
+pipeline_upload_mat4_proc :: proc(buffer: Command_Buffer_Internal, pipeline: ^Pipeline_Internal, name: string, mat: Mat4)
 pipeline_destroy_proc :: proc(buffer: Command_Buffer_Internal, pipeline: ^Pipeline_Internal)
 
 Pipeline_Commands :: struct {
 	graphics_new: pipeline_graphics_new_proc,
-	destroy: pipeline_destroy_proc
+	upload_mat4: pipeline_upload_mat4_proc,
+	destroy: pipeline_destroy_proc,
 }
 
 Pipeline_Internal :: union {
@@ -21,6 +23,7 @@ pipeline_internal_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Sh
 	    }
 		case ^Gl_Command_Buffer: {
 			commands.graphics_new = gl_pipeline_graphics_new
+			commands.upload_mat4 = gl_pipeline_upload_mat4
 			commands.destroy = gl_pipeline_destroy
 		}
 	}

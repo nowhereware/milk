@@ -15,10 +15,13 @@ draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^mil
     cam_ent := viewport.current.(milk.Entity)
     camera := milk.ecs_get(&scene.world, cam_ent, milk.Camera_3D)
     camera_transform := milk.ecs_get(&scene.world, cam_ent, milk.Transform_3D)
+    prev_cam_trans := milk.transform_state_get_3d_single(trans_state, cam_ent)
+    camera_transform.mat[3].xyz = camera_transform.mat[3].xyz * cast(f32)alpha + prev_cam_trans.mat[3].xyz * cast(f32)(1.0 - alpha)
 
     qmesh := milk.ecs_query(&scene.world, milk.ecs_with(Mesh), milk.ecs_with(milk.Transform_3D))
 
     meshes := milk.ecs_query_get(&scene.world, &qmesh, Mesh)
+    textures := milk.ecs_query_get(&scene.world, &qmesh, milk.Texture)
     mesh_transforms := milk.ecs_query_get(&scene.world, &qmesh, milk.Transform_3D)
     prev_trans := milk.transform_state_get_3d(trans_state, &qmesh)
 
@@ -32,10 +35,15 @@ draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^mil
         interp.mat[3].xyz = mesh_transforms[i].mat[3].xyz * cast(f32)alpha + prev_trans[i].mat[3].xyz * cast(f32)(1.0 - alpha)
 
         m := milk.asset_get(&meshes[i].handle, Mesh_Asset)
+        t := milk.asset_get(&textures[i].handle, milk.Texture_Asset)
 
         milk.gfx_bind_graphics_pipeline(buffer, pipeline)
 
+        milk.texture_bind(buffer, t)
+
         mesh_bind_buffers(buffer, &m, &interp, &camera_transform, &camera)
+
+        milk.pipeline_upload(buffer, &pipeline, "Transform", camera.projection * camera_transform.mat * interp.mat)
 
         mesh_draw(buffer, &m)
 
@@ -50,7 +58,7 @@ draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^mil
 }
 
 load_module :: proc(ctx: ^milk.Context) -> (out: milk.Module) {
-    milk.asset_server_register_type(&ctx.asset_server, Mesh_Asset, mesh_asset_load, mesh_asset_unload)
+    milk.asset_register_type(ctx, Mesh_Asset, mesh_asset_load, mesh_asset_unload, { ".m3d" })
 
     milk.module_add_task(&out, milk.task_new(DRAW_UNTEXTURED_MESHES_TASK, draw_untextured_meshes, type = .Draw))
     return

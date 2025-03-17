@@ -67,7 +67,7 @@ primitive_triangle_new :: proc(scene: ^milk.Scene, positions: [3]milk.Point_3D) 
 
 	milk.asset_add(scene, triangle_name, asset, milk.Asset_Standalone {})
 
-	out.handle = milk.asset_load(scene, triangle_name, Mesh_Asset, true)
+	out.handle = milk.asset_load(scene, triangle_name, true)
 
 	return
 }
@@ -77,22 +77,26 @@ primitive_quad_new :: proc(scene: ^milk.Scene, width, height: f32) -> (out: Mesh
 		{
 			// Top right
 			position = { width / 2, height / 2, 0 },
-			normal = { 1, 0, 0 }
+			normal = { 1, 0, 0 },
+			uv = { 1.0, 1.0 }
 		},
 		{
 			// Bottom right
 			position = { width / 2, -height / 2, 0 },
-			normal = { 0, 0, 1 }
+			normal = { 0, 0, 1 },
+			uv = { 1.0, 0.0 },
 		},
 		{
 			// Bottom left
 			position = { -width / 2, -height / 2, 0 },
-			normal = { 0, 1, 0 }
+			normal = { 0, 1, 0 },
+			uv = { 0.0, 0.0 },
 		},
 		{
 			// Top left
 			position = { -width / 2, height / 2, 0 },
-			normal = { 0, 0, 0 }
+			normal = { 0, 0, 0 },
+			uv = { 0.0, 1.0 }
 		}
 	}
 
@@ -113,7 +117,7 @@ primitive_quad_new :: proc(scene: ^milk.Scene, width, height: f32) -> (out: Mesh
 
 	milk.asset_add(scene, quad_name, asset, milk.Asset_Standalone {})
 
-	out.handle = milk.asset_load(scene, quad_name, Mesh_Asset, true)
+	out.handle = milk.asset_load(scene, quad_name, true)
 
 	return
 }

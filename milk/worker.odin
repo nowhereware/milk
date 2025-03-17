@@ -161,7 +161,6 @@ worker_pool_clear_done :: proc(pool: ^Worker_Pool) {
 
     // Clear the queue out too
     queue.clear(&pool.tasks)
-    queue.destroy(&pool.tasks)
 }
 
 Worker_Thread_Data :: struct {

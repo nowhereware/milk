@@ -72,6 +72,16 @@ transform_state_get_3d :: proc(state: ^Transform_State, query: ^Query_Result) ->
     return
 }
 
+// Gets a Transform_2D from a state and a singular entity
+transform_state_get_2d_single :: proc(state: ^Transform_State, ent: Entity) -> Transform_2D {
+    return ecs_storage_get_data(&state.t2d, Transform_2D, ent)
+}
+
+// Gets a Transform_3D from a state and a singular entity
+transform_state_get_3d_single :: proc(state: ^Transform_State, ent: Entity) -> Transform_3D {
+    return ecs_storage_get_data(&state.t3d, Transform_3D, ent)
+}
+
 // # Task
 // A collection of systems designed to be run in order. Ideally, systems should be sorted into tasks based on mutable data access,
 // for example all systems that modify a Transform_2D should be in the same task to minimize mutex waiting.

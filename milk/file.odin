@@ -12,20 +12,14 @@ _handle_error :: proc(error: os.Error, loc := #caller_location) {
 }
 
 // Loads a file and returns its bytes, given a *complete* relative path.
-file_get :: proc(path: string, allocator := context.allocator) -> [dynamic]u8 {
-    slice, err := os.read_entire_file_from_filename(path, context.temp_allocator)
+file_get :: proc(path: string, allocator := context.allocator) -> []u8 {
+    slice, err := os.read_entire_file_from_filename(path, allocator)
 
     if !err {
         fmt.println("Failed to get file:", path)
     }
 
-    out := make([dynamic]u8, allocator)
-
-    for b in slice {
-        append(&out, b)
-    }
-
-    return out
+    return slice
 }
 
 // Deletes a slice of file data grabbed from `file_get`
@@ -68,6 +62,18 @@ file_get_suffix :: proc(file: string) -> string {
 
     if !ok {
         panic("Failed to find the suffix!")
+    }
+
+    return suffix
+}
+
+// Returns the last suffix of the file
+file_get_last_suffix :: proc(file: string) -> string {
+    dot_index := strings.last_index(file, ".")
+    suffix, ok := strings.substring_from(file, dot_index)
+
+    if !ok {
+        panic("Failed to find the last suffix!")
     }
 
     return suffix

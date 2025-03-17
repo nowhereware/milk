@@ -21,3 +21,14 @@ for specific commands to be run on the type's underlying implementation. Type_Na
 Type_Name_Commands. For the platform implementation itself, it is placed alongside the commands and internal types in the `platform/` folder. For the platform implementation,
 the name typically follows the style of `{Type_Name}_{Platform}`, and must implement each procedure defined in `{Type_Name}_Commands`. These procedures typically follow the
 style of `{type_name}_{platform}_{command_name}`. For additional procedures that are not defined as a required command, they must be named as `{platform}_{procedure_name}`.
+
+## Namespacing
+
+Within the core milk/ folder, any procedures or types that are not platform-specific should ideally be located in the same package as the rest of Milk. The reason for this is that we try to avoid
+the overuse of subpackages as it regularly leads to issues with import recursion. Instead, you should name your types and procedures like so:
+- As stated in the #Objects section, any procedures that create, destroy, or run over a type specifically should be prefixed with the objects name, ex. `{type_name}_{proc_name}`
+- Procedures that are designed to be more general, even if they run over a specific type, should be prefixed using a desired "package" name. For example, multiple procedures in renderer.odin
+and command_pool.odin are prefixed using `gfx_` instead of `renderer_` or `command_pool_`, because they're designed to be generally used in the context of the program and not specifically in
+regards to the Renderer or Command Buffer, respectively.
+
+Types and procedures within modules in the /mod subfolders generally don't need to follow the second rule, as they're already stored in subpackages and thus already have a namespace specifier.

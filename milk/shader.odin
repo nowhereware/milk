@@ -32,7 +32,7 @@ shader_asset_load :: proc(scene: ^Scene, path: string) {
 
     info, i_err := os.stat(file_path, context.temp_allocator)
 
-    asset_add(scene, path, shader_new(&scene.ctx.renderer, data[:]), type = Asset_File {
+    asset_add(scene, path, shader_new(&scene.ctx.renderer, data), type = Asset_File {
         full_path = info.fullpath
     })
 }

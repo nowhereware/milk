@@ -21,6 +21,7 @@ asset_unloader_proc :: #type proc(scene: ^Scene, path: string)
 Asset_Server :: struct {
     type_map: map[typeid]int,
     asset_map: map[string]Asset_Handle,
+    suffix_map: map[string]typeid,
     storages: [dynamic]Asset_Storage,
     load_procs: [dynamic]asset_loader_proc,
     unload_procs: [dynamic]asset_unloader_proc,
@@ -29,6 +30,7 @@ Asset_Server :: struct {
 asset_server_new :: proc() -> (out: Asset_Server) {
     out.type_map = {}
     out.asset_map = {}
+    out.suffix_map = {}
     out.storages = make([dynamic]Asset_Storage)
     out.load_procs = make([dynamic]asset_loader_proc)
     out.unload_procs = make([dynamic]asset_unloader_proc)
@@ -38,6 +40,7 @@ asset_server_new :: proc() -> (out: Asset_Server) {
 
 asset_server_destroy :: proc(server: ^Asset_Server) {
     delete_map(server.type_map)
+    delete_map(server.suffix_map)
 
     for &storage in server.storages {
         asset_storage_destroy(&storage)
@@ -49,21 +52,54 @@ asset_server_destroy :: proc(server: ^Asset_Server) {
     delete(server.asset_map)
 }
 
-asset_server_get_storage :: proc(server: ^Asset_Server, $T: typeid) -> ^Asset_Storage {
+asset_server_get_storage :: proc {
+    asset_server_get_storage_from_type,
+    asset_server_get_storage_from_id,
+}
+
+asset_server_get_storage_from_type :: proc(server: ^Asset_Server, $T: typeid) -> ^Asset_Storage {
     return &server.storages[server.type_map[typeid_of(T)]]
 }
 
-asset_server_register_type :: proc(server: ^Asset_Server, $T: typeid, load_proc: asset_loader_proc, unload_proc: asset_unloader_proc) {
+asset_server_get_storage_from_id :: proc(server: ^Asset_Server, id: typeid) -> ^Asset_Storage {
+    return &server.storages[server.type_map[id]]
+}
+
+asset_register_type :: proc(
+    ctx: ^Context, 
+    $T: typeid, 
+    load_proc: asset_loader_proc, 
+    unload_proc: asset_unloader_proc,
+    suffixes: []string,
+) {
     id := typeid_of(T)
-    if id in server.type_map {
+    if id in ctx.asset_server.type_map {
         // Type already is registered, return
         return
     }
 
-    append(&server.storages, asset_storage_new(T))
-    server.type_map[id] = len(server.storages) - 1
-    append(&server.load_procs, load_proc)
-    append(&server.unload_procs, unload_proc)
+    append(&ctx.asset_server.storages, asset_storage_new(T))
+    ctx.asset_server.type_map[id] = len(ctx.asset_server.storages) - 1
+    append(&ctx.asset_server.load_procs, load_proc)
+    append(&ctx.asset_server.unload_procs, unload_proc)
+
+    for suffix in suffixes {
+        if suffix in ctx.asset_server.suffix_map {
+            panic("Error: attempted to redefine suffix!")
+        }
+
+        ctx.asset_server.suffix_map[suffix] = id
+    }
+}
+
+// Gets a typeid from a passed suffix
+asset_suffix_type :: proc(server: ^Asset_Server, suffix: string) -> typeid {
+    if suffix not_in server.suffix_map {
+        fmt.println(suffix)
+        panic("Failed to find suffix!")
+    }
+
+    return server.suffix_map[suffix]
 }
 
 // # Asset_Handle
@@ -77,13 +113,13 @@ Asset_Handle :: struct {
 }
 
 // Ensures that a desired asset is loaded and returns an Asset_Handle
-asset_load :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := false) -> Asset_Handle {
+asset_load :: proc(scene: ^Scene, path: string, allocated_path := false) -> Asset_Handle {
     if path not_in scene.asset_map {
         scene.asset_map[path] = {}
     }
 
     if !asset_exists(&scene.ctx.asset_server, path) {
-        _asset_load(scene, path, T)
+        _asset_load(scene, path)
     }
 
     handle := &scene.ctx.asset_server.asset_map[path]
@@ -93,13 +129,13 @@ asset_load :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := fa
 }
 
 // Ensures that a desired asset is loaded.
-asset_preload :: proc(scene: ^Scene, path: string, $T: typeid, allocated_path := false) {
+asset_preload :: proc(scene: ^Scene, path: string, allocated_path := false) {
     if path not_in scene.asset_map {
         scene.asset_map[path] = {}
     }
 
-    if !asset_exists(&scene.ctx.asset_server, path, T) {
-        _asset_load(scene.ctx, path, T)
+    if !asset_exists(&scene.ctx.asset_server, path) {
+        _asset_load(scene, path)
     }
 
     handle := &scene.ctx.asset_server.asset_map[path]
@@ -131,7 +167,6 @@ Asset_File :: struct {
 // # Asset Standalone
 // An asset that is typically loaded at runtime and is not dependent on any pre-existing data.
 Asset_Standalone :: struct {}
-
 
 // Creates an allocated name string using a UUID. Should ideally be only used with Asset_Standalone(s).
 asset_generate_name :: proc() -> string {
@@ -167,14 +202,15 @@ Asset_Tracker :: struct {
 }
 
 @(private)
-_asset_load :: proc(scene: ^Scene, path: string, $T: typeid, loc := #caller_location) {
-    id := typeid_of(T)
+_asset_load :: proc(scene: ^Scene, path: string, loc := #caller_location) {
+    suffix := file_get_last_suffix(path)
+    id := asset_suffix_type(&scene.ctx.asset_server, suffix)
 
     if id not_in scene.ctx.asset_server.type_map {
         panic("Error, asset types must be registered before use!", loc = loc)
     }
 
-    storage := asset_server_get_storage(&scene.ctx.asset_server, T)
+    storage := asset_server_get_storage(&scene.ctx.asset_server, id)
     outer: if path not_in storage.path_map {
         for !sync.mutex_try_lock(&storage.access_mutex) {
             if path in storage.path_map {
@@ -375,7 +411,7 @@ asset_get_from_path :: proc(scene: ^Scene, path: string, $T: typeid, allocated_p
     }
 
     if !asset_exists(&scene.ctx.asset_server, path) {
-        _asset_load(scene, path, T)
+        _asset_load(scene, path)
     }
 
     handle := &scene.ctx.asset_server.asset_map[path]

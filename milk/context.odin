@@ -95,8 +95,9 @@ context_new :: proc(conf: ^Context_Config) -> (out: Context) {
     out.input_state = input_state_new()
 
     // Register builtin assets
-    asset_server_register_type(&out.asset_server, Shader_Asset, shader_asset_load, shader_asset_unload)
-    asset_server_register_type(&out.asset_server, Pipeline_Asset, pipeline_asset_load, pipeline_asset_unload)
+    asset_register_type(&out, Shader_Asset, shader_asset_load, shader_asset_unload, { ".vert", ".frag", ".geom" })
+    asset_register_type(&out, Pipeline_Asset, pipeline_asset_load, pipeline_asset_unload, { ".gfx", ".comp" })
+    asset_register_type(&out, Texture_Asset, texture_asset_load, texture_asset_unload, { ".png", ".jpg" })
 
     out.update_fps = conf.fps
 
@@ -213,6 +214,13 @@ context_run :: proc(ctx: ^Context) {
                     w, h: i32 = 0, 0
                     SDL.GetWindowSize(ctx.renderer.window, &w, &h)
                     renderer_window_resized(&ctx.renderer, { u32(w), u32(h) })
+
+                    if ctx.renderer.primary_viewport.current != nil {
+                        if ecs_has(&ctx.scene.world, ctx.renderer.primary_viewport.current.(Entity), Camera_3D) {
+                            cam_3d := ecs_get_ptr(&ctx.scene.world, ctx.renderer.primary_viewport.current.(Entity), Camera_3D)
+                            camera_3d_update_aspect(cam_3d, f32(w) / f32(h))
+                        }
+                    }
                 }
                 case .WINDOW_MINIMIZED: {
                     ctx.should_render = false

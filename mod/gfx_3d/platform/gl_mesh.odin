@@ -66,39 +66,33 @@ gl_mesh_new :: proc(cmd: pt.Command_Buffer_Internal, vertices: []milk.Vertex, in
     command :: proc(data: rawptr) {
         d := cast(^Submit_Data)data
 
-        fmt.println("NEW MESH")
+        gl.CreateBuffers(1, d.vertex_buffer)
+        gl.NamedBufferStorage(d.vertex_buffer^, len(d.vertices) * size_of(milk.Vertex), raw_data(d.vertices), gl.DYNAMIC_STORAGE_BIT)
+        d.vertex_count^ = cast(i32)len(d.vertices)
 
-        // Create VAO
-        gl.GenVertexArrays(1, d.vao)
-    
-        // Create vertex buffer
-        gl.GenBuffers(1, d.vertex_buffer)
+        fmt.println(d.vertices)
 
-        // Create index buffer
-        gl.GenBuffers(1, d.index_buffer)
-
-        gl.BindVertexArray(d.vao^)
-
-        temp_vertices := make([dynamic]f32)
-
-        for vert in d.vertices {
-            append_elems(&temp_vertices, vert.position.x, vert.position.y, vert.position.z)
-        }
-
-        fmt.println(temp_vertices)
-
-        gl.BindBuffer(gl.ARRAY_BUFFER, d.vertex_buffer^)
-        gl.BufferData(gl.ARRAY_BUFFER, len(temp_vertices) * size_of(f32), raw_data(temp_vertices), gl.STATIC_DRAW)
-        d.vertex_count^ = cast(i32)len(temp_vertices)
-
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, d.index_buffer^)
-        gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(d.indices) * size_of(u32), raw_data(d.indices[:]), gl.STATIC_DRAW)
+        gl.CreateBuffers(1, d.index_buffer)
+        gl.NamedBufferStorage(d.index_buffer^, len(d.indices) * size_of(u32), raw_data(d.indices), gl.DYNAMIC_STORAGE_BIT)
         d.index_count^ = cast(i32)len(d.indices)
 
-        gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 3 * size_of(f32), 0)
-        gl.EnableVertexAttribArray(0)
+        gl.CreateVertexArrays(1, d.vao)
+    
+        gl.VertexArrayVertexBuffer(d.vao^, 0, d.vertex_buffer^, 0, size_of(milk.Vertex))
+        gl.VertexArrayElementBuffer(d.vao^, d.index_buffer^)
 
-        delete(temp_vertices)
+        gl.EnableVertexArrayAttrib(d.vao^, 0)
+        gl.EnableVertexArrayAttrib(d.vao^, 1)
+        gl.EnableVertexArrayAttrib(d.vao^, 2)
+
+        gl.VertexArrayAttribFormat(d.vao^, 0, 3, gl.FLOAT, false, cast(u32)offset_of(milk.Vertex, position))
+        gl.VertexArrayAttribFormat(d.vao^, 1, 2, gl.FLOAT, false, cast(u32)offset_of(milk.Vertex, uv))
+        gl.VertexArrayAttribFormat(d.vao^, 2, 3, gl.FLOAT, false, cast(u32)offset_of(milk.Vertex, normal))
+
+        gl.VertexArrayAttribBinding(d.vao^, 0, 0)
+        gl.VertexArrayAttribBinding(d.vao^, 1, 0)
+        gl.VertexArrayAttribBinding(d.vao^, 2, 0)
+
         delete(d.vertices)
         delete(d.indices)
         free(data)
@@ -147,9 +141,6 @@ gl_mesh_bind_buffers :: proc(cmd: pt.Command_Buffer_Internal, mesh: ^Mesh_Intern
         //gl.NamedBufferSubData(d.uniform_buffer^, 0, size_of(pt.Uniform_Buffer_Object), &ubo)
 
         gl.BindVertexArray(d.vao^)
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, d.index_buffer^)
-    
-        //gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, d.index_buffer^)
 
         free(data)
     }

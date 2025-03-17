@@ -86,12 +86,12 @@ world_get_storage :: proc(world: ^World, $T: typeid, loc := #caller_location) ->
 }
 
 // Creates a new Entity ID.
-@(private)
+@(private="file")
 get_new_id :: proc(world: ^World) -> Entity {
 	id := queue.pop_front(&world.available_ids)
 
 	if id == world.entity_count {
-		// We've received a sequential ID, so we may have run out of recycled IDs. Push a new ID to the back
+		// We've received a sequential ID, so we may have run out of recycled IDs. Push a new ID to the back.
 		// Increase the number of the next ID.
 		world.entity_count += 1
 		queue.push(&world.available_ids, world.entity_count)
@@ -101,7 +101,7 @@ get_new_id :: proc(world: ^World) -> Entity {
 }
 
 // Searches within the signature array to find a desired signature
-@(private)
+@(private="file")
 search_for_signature :: proc(world: ^World, sig: Signature) -> (index: int, ok: bool) {
 	sig := sig
 	for &iter_sig, iter_index in world.signature_array {
@@ -120,7 +120,6 @@ search_for_signature :: proc(world: ^World, sig: Signature) -> (index: int, ok: 
 // Checks if a given signature exists within the world. If it doesn't, it's created. Returns index of the signature.
 check_signature :: proc(world: ^World, sig: Signature) -> int {
 	if index, ok := search_for_signature(world, sig); ok {
-		delete(sig.bits)
 		return index
 	}
 

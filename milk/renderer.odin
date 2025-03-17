@@ -79,7 +79,7 @@ renderer_new :: proc(conf: ^Context_Config) -> (out: Renderer) {
     }
 
     out.internal, out.commands, internal_devices = pt.renderer_internal_new(out.window, &rend_cfg)
-    queue.init(&out.pool_queue)
+    queue.init(&out.pool_queue, os.processor_core_count())
     out.commands.set_clear_color(&out.internal, conf.clear_color)
 
     local_command_pool = command_pool_new(&out)

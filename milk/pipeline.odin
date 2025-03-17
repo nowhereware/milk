@@ -6,8 +6,13 @@ import "core:fmt"
 import "core:strings"
 import SDL "vendor:sdl3"
 
+// # Pipeline Asset
+// A pipeline used by the GPU for processing shader code.
 Pipeline_Asset :: struct {
+	// The type of the Pipeline
 	type: pt.Pipeline_Type,
+	// A map mapping buffer binding indices to Buffer(s).
+	buffer_map: map[int]Buffer,
 	internal: pt.Pipeline_Internal,
 	commands: pt.Pipeline_Commands
 }
@@ -21,6 +26,14 @@ pipeline_graphics_new :: proc(buffer: Command_Buffer, vert: Shader_Asset, frag: 
 
 pipeline_destroy :: proc(buffer: Command_Buffer, pipeline: ^Pipeline_Asset) {
 	pipeline.commands.destroy(buffer.internal, &pipeline.internal)
+}
+
+pipeline_upload :: proc {
+	pipeline_upload_mat4,
+}
+
+pipeline_upload_mat4 :: proc(buffer: Command_Buffer, pipeline: ^Pipeline_Asset, name: string, mat: Mat4) {
+	pipeline.commands.upload_mat4(buffer.internal, &pipeline.internal, name, mat)
 }
 
 @(private="file")
@@ -83,8 +96,8 @@ pipeline_asset_load :: proc(scene: ^Scene, path: string) {
 				),
 				Asset_Dependent {
 					dependencies = {
-						asset_load(scene, files[.Vert], Shader_Asset, true),
-						asset_load(scene, files[.Frag], Shader_Asset, true)
+						asset_load(scene, files[.Vert], true),
+						asset_load(scene, files[.Frag], true)
 					}
 				}
 			)

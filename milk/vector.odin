@@ -44,6 +44,12 @@ Transform_3D :: struct {
     mat: Mat4,
 }
 
+Vector_Axis :: enum {
+    X,
+    Y,
+    Z
+}
+
 transform_3d_new :: proc() -> (out: Transform_3D) {
     out.mat = 1
     return
@@ -52,7 +58,7 @@ transform_3d_new :: proc() -> (out: Transform_3D) {
 transform_3d_from_xyz :: proc(position: Point_3D) -> (out: Transform_3D) {
     out.mat = glsl.mat4Translate(position)
 
-    out.mat[1][1] *= -1
+    //out.mat[1][1] *= -1
 
     return
 }

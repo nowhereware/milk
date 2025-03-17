@@ -1,11 +1,13 @@
 package milk_platform
 
 import "core:fmt"
+import "core:math/linalg/glsl"
 import "core:strings"
 import gl "vendor:OpenGL"
 
 Gl_Pipeline :: struct {
     program: ^u32,
+    uniform_buffer: ^u32,
 }
 
 gl_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_Internal, frag: Shader_Internal) -> Pipeline_Internal {
@@ -18,6 +20,7 @@ gl_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_I
         vert: ^Gl_Shader,
         frag: ^Gl_Shader,
         program: ^u32,
+        uniform_buffer: ^u32,
     }
 
     command :: proc(data: rawptr) {
@@ -50,6 +53,9 @@ gl_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_I
         gl.DeleteShader(frag_shader)
 
         d.program^ = program
+        
+        gl.CreateBuffers(1, d.uniform_buffer)
+        gl.NamedBufferData(d.uniform_buffer^, size_of(Mat4), nil, gl.STATIC_DRAW)
 
         free(d.vert)
         free(d.frag)
@@ -58,11 +64,13 @@ gl_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_I
     }
 
     out.program = new(u32)
+    out.uniform_buffer = new(u32)
 
     submit_data := Submit_Data {
         vert = new_clone(vert),
         frag = new_clone(frag),
         program = out.program,
+        uniform_buffer = out.uniform_buffer,
     }
 
     append(&buffer.commands, Gl_Command { new_clone(submit_data), command })
@@ -70,11 +78,44 @@ gl_pipeline_graphics_new :: proc(buffer: Command_Buffer_Internal, vert: Shader_I
     return out
 }
 
+gl_pipeline_upload_mat4 :: proc(buffer: Command_Buffer_Internal, pipeline: ^Pipeline_Internal, name: string, mat: Mat4) {
+    buffer := buffer.(^Gl_Command_Buffer)
+    pipeline := pipeline.(Gl_Pipeline)
+
+    Submit_Data :: struct {
+        program: ^u32,
+        uniform_buffer: ^u32,
+        name: cstring,
+        mat: ^Mat4,
+    }
+
+    submit := Submit_Data {
+        program = pipeline.program,
+        uniform_buffer = pipeline.uniform_buffer,
+        name = strings.clone_to_cstring(name),
+        mat = new_clone(mat),
+    }
+
+    command :: proc(data: rawptr) {
+        d := cast(^Submit_Data)data
+
+        gl.NamedBufferSubData(d.uniform_buffer^, 0, size_of(Mat4), d.mat)
+
+        delete(d.name)
+        free(d.mat)
+        free(data)
+    }
+
+    append(&buffer.commands, Gl_Command { new_clone(submit), command })
+}
+
 gl_pipeline_destroy :: proc(buffer: Command_Buffer_Internal, pipeline: ^Pipeline_Internal) {
     buffer := buffer.(^Gl_Command_Buffer)
     pipeline := &pipeline.(Gl_Pipeline)
 
     gl.DeleteProgram(pipeline.program^)
+    gl.DeleteBuffers(1, pipeline.uniform_buffer)
 
     free(pipeline.program)
+    free(pipeline.uniform_buffer)
 }

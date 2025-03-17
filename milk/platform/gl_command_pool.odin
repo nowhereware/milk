@@ -26,6 +26,7 @@ gl_command_buffer_bind_graphics_pipeline :: proc(buffer: Command_Buffer_Internal
         d := cast(^Gl_Pipeline)data
 
         gl.UseProgram(d.program^)
+        gl.BindBufferBase(gl.UNIFORM_BUFFER, 1, d.uniform_buffer^)
 
         free(data)
     }

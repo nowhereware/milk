@@ -16,4 +16,6 @@ gl_shader_new :: proc(rend: ^Renderer_Internal, src: []u8) -> Shader_Internal {
 
 gl_shader_destroy :: proc(shader: ^Shader_Internal) {
     shader := &shader.(Gl_Shader)
+
+    //delete(shader.src)
 }
