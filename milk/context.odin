@@ -82,7 +82,9 @@ Context :: struct {
 
 // Creates and returns a new Context, while also initializing subsystems
 context_new :: proc(conf: ^Context_Config) -> (out: Context) {
-    flags: SDL.InitFlags = SDL.INIT_VIDEO + SDL.INIT_GAMEPAD + SDL.INIT_AUDIO
+    flags: SDL.InitFlags = {
+        .VIDEO, .GAMEPAD, .AUDIO
+    }
 
     // Init subsystems
     if (!SDL.Init(flags)) {
@@ -205,9 +207,6 @@ context_run :: proc(ctx: ^Context) {
                     if event.key.key == SDL.K_F4 {
                         ctx.should_quit = true
                         break
-                    } else if event.key.key == SDL.K_F4 {
-                        renderer_set_clear_color(&ctx.renderer, color_from_percent({0.0, 0.0, 0.0, 1.0}))
-                        fmt.println("Changed!")
                     }
                 }
                 case .WINDOW_RESIZED: {
