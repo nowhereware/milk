@@ -2,14 +2,34 @@ package milk
 
 import "core:fmt"
 
-// # System
+// # System_Proc
 // A procedure typically run as part of a Module. A System has a limited amount of valid proc signatures, which are stored here.
-System :: union {
+System_Proc :: union {
     proc(world: ^World),
-    // Typically an update task
+    // An update task
     proc(scene: ^Scene, delta: f64),
-    // Typically a draw task
+    // An update task with a query
+    proc(scene: ^Scene, query: Query, delta: f64),
+    // A draw task
     proc(scene: ^Scene, alpha: f64, trans_state: ^Transform_State),
+    // A draw task with a query
+    proc(scene: ^Scene, query: Query, alpha: f64, trans_state: ^Transform_State),
+}
+
+// # System
+// A cached system run in a module. Stores the procedure itself (a variant of System_Proc) and a Query relating to the system.
+System :: struct {
+    execute: System_Proc,
+    query: Query,
+}
+
+ecs_system :: proc(system: System_Proc, queries: ..Query_ID) -> System {
+    out: System
+    out.execute = system
+    out.query.queries = make([dynamic]Query_ID)
+    append_elems(&out.query.queries, ..queries)
+
+    return out
 }
 
 // # Task Type
@@ -115,15 +135,21 @@ task_new :: proc($T: typeid, systems: ..System, dependencies: [dynamic]typeid = 
 // Runs a task given a list of required data.
 task_run :: proc(task: ^Task, ctx: ^Context, trans_state: ^Transform_State) {
     for system in task.systems {
-        switch t in system {
+        switch t in system.execute {
             case proc(world: ^World): {
                 t(&ctx.scene.world)
             }
             case proc(scene: ^Scene, delta: f64): {
                 t(ctx.scene, ctx.update_fps)
             }
+            case proc(scene: ^Scene, query: Query, delta: f64): {
+                t(ctx.scene, system.query, ctx.update_fps)
+            }
             case proc(scene: ^Scene, alpha: f64, trans_state: ^Transform_State): {
                 t(ctx.scene, ctx.timestep.alpha, trans_state)
+            }
+            case proc(scene: ^Scene, query: Query, alpha: f64, trans_state: ^Transform_State): {
+                t(ctx.scene, system.query, ctx.timestep.alpha, trans_state)
             }
         }
     }
@@ -134,6 +160,11 @@ task_destroy :: proc(task: ^Task) {
     if task.dependencies != nil {
         delete(task.dependencies)
     }
+
+    for sys in task.systems {
+        delete(sys.query.queries)
+    }
+
     delete(task.systems)
 }
 

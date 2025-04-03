@@ -44,7 +44,7 @@ vk_command_pool_new :: proc(rend: ^Renderer_Internal) -> Command_Pool_Internal {
     out: Vk_Command_Pool
 
     out.rend = rend
-    out.device = rend.device
+    out.device = rend.device.ptr
     out.queue_family_index = rend.graphics_queue.family_index
 
     out.last_submit_semaphore = {
@@ -67,7 +67,7 @@ vk_command_pool_new :: proc(rend: ^Renderer_Internal) -> Command_Pool_Internal {
         flags = { .RESET_COMMAND_BUFFER, .TRANSIENT },
         queueFamilyIndex = out.queue_family_index,
     }
-    vk.CreateCommandPool(rend.device, &info, nil, &out.command_pool)
+    vk.CreateCommandPool(rend.device.ptr, &info, nil, &out.command_pool)
 
     alloc_info := vk.CommandBufferAllocateInfo {
         sType = .COMMAND_BUFFER_ALLOCATE_INFO,
@@ -78,9 +78,9 @@ vk_command_pool_new :: proc(rend: ^Renderer_Internal) -> Command_Pool_Internal {
 
     for i in 0..<MAX_COMMAND_BUFFERS {
         wrapper := &out.buffers[i]
-        wrapper.semaphore = vk_create_semaphore(rend.device)
-        wrapper.fence = vk_create_fence(rend.device)
-        vk.AllocateCommandBuffers(rend.device, &alloc_info, &wrapper.buffer_allocated)
+        wrapper.semaphore = vk_create_semaphore(rend.device.ptr)
+        wrapper.fence = vk_create_fence(rend.device.ptr)
+        vk.AllocateCommandBuffers(rend.device.ptr, &alloc_info, &wrapper.buffer_allocated)
         wrapper.handle.buffer_index = cast(u32)i
         odin_queue.push(&out.available_buffer_queue, i)
         wrapper.rend = out.rend

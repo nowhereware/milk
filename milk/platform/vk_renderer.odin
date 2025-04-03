@@ -8,13 +8,14 @@ import "core:mem"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
 import "../../lib/vma"
+import "../../lib/vkb"
 
 Vk_Renderer :: struct {
-    instance: vk.Instance,
+    instance: ^vkb.Instance,
     surface: vk.SurfaceKHR,
-    device: vk.Device,
+    device: ^vkb.Device,
     graphics_device: ^Vk_Graphics_Device,
-    validation_layers: [dynamic]cstring,
+    selected_device: ^vkb.Physical_Device,
     device_extensions: [dynamic]cstring,
     features: Vk_Features,
     graphics_queue: Vk_Queue,
@@ -49,24 +50,66 @@ vk_renderer_new :: proc(window: ^SDL.Window, conf: ^Renderer_Config) -> (Rendere
     SDL.GetWindowSize(window, &w, &h)
     out.frame_count = 3 // Currently triple-buffered
 
-    app_info := vk.ApplicationInfo {
-        sType = .APPLICATION_INFO,
-        pApplicationName = conf.app_name,
-        applicationVersion = vk.MAKE_VERSION(conf.app_version.x, conf.app_version.y, conf.app_version.z),
-        pEngineName = "Milk Engine",
-        engineVersion = vk.MAKE_VERSION(0, 1, 0),
-        apiVersion = vk.MAKE_VERSION(1, 4, 0),
-        pNext = nil,
-    }
-
     // Create pools
     out.texture_pool = vk_pool_new(Vk_Image)
 
-    vk_create_instance(&out, &app_info)
-    vk_create_surface(&out, window)
-    graphics_devices := vk_graphics_device_enumerate(&out)
-    out.graphics_device = vk_graphics_device_select(graphics_devices)
-    vk_create_device(&out)
+    // Create Instance
+    inst_builder := vkb.init_instance_builder()
+    vkb.instance_set_app_name(&inst_builder, strings.clone_from_cstring(conf.app_name))
+    vkb.instance_set_app_version(&inst_builder, vk.MAKE_VERSION(conf.app_version.x, conf.app_version.y, conf.app_version.y))
+    vkb.instance_set_engine_name(&inst_builder, "Milk Engine")
+    vkb.instance_set_engine_version(&inst_builder, vk.MAKE_VERSION(0, 1, 0))
+    vkb.instance_require_api_version(&inst_builder, vk.MAKE_VERSION(1, 3, 0))
+    vkb.instance_use_default_debug_messenger(&inst_builder)
+
+    inst_ok: bool
+    out.instance, inst_ok = vkb.build_instance(&inst_builder)
+
+    // Create Surface
+    SDL.Vulkan_CreateSurface(window, out.instance.ptr, nil, &out.surface)
+
+    // Create Device
+
+    // Required features
+    features_13 := vk.PhysicalDeviceVulkan13Features {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        dynamicRendering = true,
+        synchronization2 = true,
+    }
+
+    features_12 := vk.PhysicalDeviceVulkan12Features {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        bufferDeviceAddress = true,
+        descriptorIndexing = true,
+    }
+
+    // Select a suitable device
+    device_selector, sel_ok := vkb.init_physical_device_selector(out.instance)
+    vkb.selector_set_required_features_13(&device_selector, features_13)
+    vkb.selector_set_required_features_12(&device_selector, features_12)
+    vkb.selector_set_minimum_version(&device_selector, vk.MAKE_VERSION(1, 3, 0))
+    vkb.selector_set_surface(&device_selector, out.surface)
+    vkb.selector_prefer_gpu_device_type(&device_selector, .Discrete)
+
+    device_list, device_list_ok := vkb.enumerate_physical_devices(out.instance.ptr)
+    graphics_devices := vk_convert_devices(&out, device_list)
+
+    selected_physical_device, selected_ok := vkb.select_physical_device(&device_selector)
+    out.selected_device = selected_physical_device
+    device_builder, device_builder_ok := vkb.init_device_builder(selected_physical_device)
+
+    // Build the device
+    device_ok: bool
+    out.device, device_ok = vkb.build_device(&device_builder)
+
+    for &dev in graphics_devices {
+        dev := &dev.(Vk_Graphics_Device)
+
+        if dev.name == selected_physical_device.name {
+            out.graphics_device = dev
+        }
+    }
+
     out.color_space = .SRGB_NONLINEAR
     vk_create_swapchain(&out, u32(w), u32(h))
 
@@ -269,19 +312,23 @@ vk_renderer_end :: proc(rend: ^Renderer_Internal, window: ^SDL.Window) {
 vk_renderer_quit :: proc(rend: ^Renderer_Internal) {
     rend := &rend.(Vk_Renderer)
 
-    vk.DeviceWaitIdle(rend.device)
+    vk.DeviceWaitIdle(rend.device.ptr)
 
     vk_pool_destroy(&rend.texture_pool)
 
-    vk.DestroySemaphore(rend.device, rend.swapchain.timeline_semaphore, nil)
-    vk.DestroySwapchainKHR(rend.device, rend.swapchain.swapchain, nil)
+    vk.DestroySemaphore(rend.device.ptr, rend.swapchain.timeline_semaphore, nil)
 
-    vk.DestroyDevice(rend.device, nil)
+    vkb.destroy_swapchain(rend.swapchain.swapchain)
 
-    vk.DestroySurfaceKHR(rend.instance, rend.surface, nil)
-    vk.DestroyInstance(rend.instance, nil)
+    for view in rend.swapchain.image_views {
+        vk.DestroyImageView(rend.device.ptr, view, nil)
+    }
 
-    delete(rend.validation_layers)
+    vk.DestroyDevice(rend.device.ptr, nil)
+
+    vk.DestroySurfaceKHR(rend.instance.ptr, rend.surface, nil)
+    vk.DestroyInstance(rend.instance.ptr, nil)
+
     delete(rend.device_extensions)
     delete(rend.swapchain.images)
 }

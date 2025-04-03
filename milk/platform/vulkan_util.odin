@@ -469,7 +469,7 @@ vk_image_get_or_create_framebuffer_view :: proc(image: ^Vk_Image, rend: ^Vk_Rend
 
     image.image_view_for_framebuffer[level][layer] = vk_image_create_image_view(
         image,
-        rend.device,
+        rend.device.ptr,
         .D2,
         image.image_format,
         vk_image_get_aspect_flags(image),

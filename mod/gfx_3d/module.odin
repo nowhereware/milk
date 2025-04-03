@@ -5,7 +5,7 @@ import "core:fmt"
 
 DRAW_UNTEXTURED_MESHES_TASK :: struct {}
 
-draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^milk.Transform_State) {
+draw_untextured_meshes :: proc(scene: ^milk.Scene, query: milk.Query, alpha: f64, trans_state: ^milk.Transform_State) {
     viewport := milk.gfx_get_primary_viewport(&scene.ctx.renderer)
 
     if viewport.current == nil {
@@ -18,7 +18,7 @@ draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^mil
     prev_cam_trans := milk.transform_state_get_3d_single(trans_state, cam_ent)
     camera_transform.mat[3].xyz = camera_transform.mat[3].xyz * cast(f32)alpha + prev_cam_trans.mat[3].xyz * cast(f32)(1.0 - alpha)
 
-    qmesh := milk.ecs_query(&scene.world, milk.ecs_with(Mesh), milk.ecs_with(milk.Transform_3D))
+    qmesh := milk.ecs_query(&scene.world, query, 0)
 
     meshes := milk.ecs_query_get(&scene.world, &qmesh, Mesh)
     textures := milk.ecs_query_get(&scene.world, &qmesh, milk.Texture)
@@ -57,9 +57,13 @@ draw_untextured_meshes :: proc(scene: ^milk.Scene, alpha: f64, trans_state: ^mil
     delete(prev_trans)
 }
 
-load_module :: proc(ctx: ^milk.Context) -> (out: milk.Module) {
-    milk.asset_register_type(ctx, Mesh_Asset, mesh_asset_load, mesh_asset_unload, { ".m3d" })
+load_module :: proc(scene: ^milk.Scene) -> (out: milk.Module) {
+    milk.asset_register_type(scene.ctx, Mesh_Asset, mesh_asset_load, mesh_asset_unload, { ".m3d" })
 
-    milk.module_add_task(&out, milk.task_new(DRAW_UNTEXTURED_MESHES_TASK, draw_untextured_meshes, type = .Draw))
+    milk.module_add_task(&out, milk.task_new(
+        DRAW_UNTEXTURED_MESHES_TASK, 
+        milk.ecs_system(draw_untextured_meshes, milk.ecs_query_def(&scene.world, milk.ecs_with(Mesh), milk.ecs_with(milk.Transform_3D))),
+        type = .Draw
+    ))
     return
 }

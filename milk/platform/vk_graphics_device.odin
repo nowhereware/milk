@@ -40,33 +40,24 @@ vk_interpret_device_type :: proc(type: vk.PhysicalDeviceType) -> Graphics_Device
     return .Dedicated
 }
 
-vk_graphics_device_enumerate :: proc(rend: ^Vk_Renderer) -> [dynamic]Graphics_Device_Internal {
-    count: u32 = 0
-    vk.EnumeratePhysicalDevices(rend.instance, &count, nil)
-    phys_device_list := make([dynamic]vk.PhysicalDevice, count)
-    vk.EnumeratePhysicalDevices(rend.instance, &count, raw_data(phys_device_list))
+vk_convert_devices :: proc(rend: ^Vk_Renderer, devices: []vk.PhysicalDevice) -> [dynamic]Graphics_Device_Internal {
+    out := make([dynamic]Graphics_Device_Internal)
 
-    desired_type := Graphics_Device_Type.Dedicated
-
-    out := make([dynamic]Vk_Graphics_Device)
-
-    resize(&out, count)
-    for i in 0..<count {
-        device := phys_device_list[i]
+    for dev in devices {
         props: vk.PhysicalDeviceProperties
-        vk.GetPhysicalDeviceProperties(device, &props)
-        device_type := vk_interpret_device_type(props.deviceType)
-
-        dev_vulkan := Vk_Graphics_Device {
-            device = device
-        }
-        dev_vulkan.name = strings.clone_from_bytes(props.deviceName[:])
-        dev_vulkan.type = device_type
+        vk.GetPhysicalDeviceProperties(dev, &props)
 
         ext_count: u32 = 0
-        vk.EnumerateDeviceExtensionProperties(dev_vulkan.device, nil, &ext_count, nil)
+        vk.EnumerateDeviceExtensionProperties(dev, nil, &ext_count, nil)
+
+        dev_vulkan := Vk_Graphics_Device {
+            device = dev,
+            name = strings.clone_from_bytes(props.deviceName[:]),
+            type = vk_interpret_device_type(props.deviceType)
+        }
+
         resize(&dev_vulkan.extensions, ext_count)
-        vk.EnumerateDeviceExtensionProperties(dev_vulkan.device, nil, &ext_count, raw_data(dev_vulkan.extensions))
+        vk.EnumerateDeviceExtensionProperties(dev, nil, &ext_count, raw_data(dev_vulkan.extensions))
 
         features_14 := vk.PhysicalDeviceVulkan14Features {
             sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
@@ -105,17 +96,10 @@ vk_graphics_device_enumerate :: proc(rend: ^Vk_Renderer) -> [dynamic]Graphics_De
 
         vk_query_surface_capabilities(rend, &dev_vulkan)
 
-        out[i] = dev_vulkan
+        append(&out, dev_vulkan)
     }
 
-    retlist := make([dynamic]Graphics_Device_Internal)
-    for dev in out {
-        append(&retlist, cast(Graphics_Device_Internal)dev)
-    }
-
-    delete(phys_device_list)
-
-    return retlist
+    return out
 }
 
 // Chooses a preferred graphics device from the list. This is the default runner, so we typically prefer a dedicated GPU.

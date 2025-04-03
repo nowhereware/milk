@@ -32,3 +32,13 @@ and command_pool.odin are prefixed using `gfx_` instead of `renderer_` or `comma
 regards to the Renderer or Command Buffer, respectively.
 
 Types and procedures within modules in the /mod subfolders generally don't need to follow the second rule, as they're already stored in subpackages and thus already have a namespace specifier.
+
+## Functionality
+
+Milk is designed to be highly extensible and highly concurrent, and as such when adding functionality to Milk there's 2 primary considerations: platform support and thread safety.
+As stated above, any functionality that's designed to have different implementations for different platforms should follow the platform-specific guidelines, using a union for each platform implementation
+and a struct containing a v-table of procedures that run over the union, which at runtime is filled in with the platform-specific procedures. For thread safety, what needs to be considered is that any and every task
+can and will run on separate threads. As such, any code that should be accessed by a task needs to ensure that data modified as a result of the task is safely guarded. For example, both ECS storages and Asset storages utilize
+mutexes to ensure that multiple tasks don't modify a given storage at a time as that may invalidate the given storage's dense storage array for another task. Alternatively, data that needs to only exist for a specific
+worker thread may utilize a global `@(thread_local)` variable to ensure that the worker only accesses its specific data. This practice can be seen in the debug Profiler, where each worker has a thread local profiler
+that it can access. The advantage of using a global variable for this over a local variable inside the Worker_Thread_Data struct is that a global can be accessed within any task, whereas local thread data is not passed to tasks and as such cannot be directly accessed when needed.

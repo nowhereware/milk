@@ -21,3 +21,8 @@ For a majority of Milk's development up until the writing of this document, Milk
 ### Milk Editor
 
 Ideally at some point we'd like to have a full GUI-based editor for Milk. This editor would be used primarily to edit JSON-based scene files that a game written in Milk would load and use at runtime.
+
+### DirectX12 Support
+
+While both Linux/BSD and Windows support Vulkan, DirectX12 is typically the preferred API for Windows and in most benchmarks runs faster than Vulkan. Slang shaders are already used for optimal cross-platform compatibility,
+and DirectX12 is also as of writing in the process of transitioning to SPIR-V for shader bytecode, so it shouldn't be terribly difficult to add DirectX12 support on the shader side. On the internal side, DirectX12 should ideally just be implemented as another backend for Renderer_Internal.

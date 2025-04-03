@@ -9,6 +9,9 @@ import "core:sync"
 // An identifier for an entity within the ECS.
 Entity :: u64
 
+// An identifier for a Query's index within the ECS.
+Query_ID :: int
+
 // A Bit_Array that determines the composition of an entity.
 Signature :: ba.Bit_Array
 
@@ -36,6 +39,12 @@ World :: struct {
 	available_ids: queue.Queue(Entity),
 	// A count of all entities in the world
 	entity_count: u64,
+
+	// Queries
+	// Stores a list of unique Queries.
+	query_array: [dynamic]Cached_Query,
+	// Mutex for modifying the query array.
+	query_mutex: sync.Mutex,
 }
 
 // Creates a new ECS world.
@@ -76,6 +85,12 @@ world_destroy :: proc(world: ^World) {
 	delete(world.signature_storages)
 	delete(world.entity_map)
 	queue.destroy(&world.available_ids)
+
+	for &query in world.query_array {
+		ecs_query_destroy(&query)
+	}
+
+	delete(world.query_array)
 }
 
 // Gets the component storage of a World from a given type T.
@@ -486,6 +501,116 @@ signature_storage_destroy :: proc(storage: ^Signature_Storage) {
 	delete(storage.index_map)
 }
 
+// # Cached_Query
+// A cached query result. Systems use this to access their defined list of queries, and operate on entities from that data.
+Cached_Query :: struct {
+	// The signature of this query.
+	signature: Signature,
+	// The signatures matching this query.
+	matching: [dynamic]int,
+}
+
+// Defines or reuses a Query, and returns the Query's ID.
+ecs_query_def :: proc(world: ^World, terms: ..Query_Term) -> Query_ID {
+	// Create a signature from the term list.
+	query_sig: Signature = {}
+    mutable_accessors := make([dynamic]^sync.Mutex, context.temp_allocator)
+    for term in terms {
+        switch term.filter {
+            case .With: {
+                ba.set(&query_sig, world.comp_map[term.id], true)
+            }
+            case .With_Ptr: {
+                ba.set(&query_sig, world.comp_map[term.id], true)
+                append(&mutable_accessors, &world.storage_array[world.comp_map[term.id]].mutex)
+            }
+            case .Without: {
+                ba.set(&query_sig, world.comp_map[term.id], false)
+            }
+        }
+    }
+
+	// Ensure that our query doesn't already exist within the world.
+	outer: for &query, index in world.query_array {
+		if ba.len(&query_sig) != ba.len(&query.signature) {
+			continue outer
+		}
+
+		query_iter := ba.make_iterator(&query_sig)
+
+		for query_bit, ok := ba.iterate_by_set(&query_iter); ok; query_bit, ok = ba.iterate_by_set(&query_iter) {
+			res, ok := ba.get(&query.signature, query_bit)
+
+			if !res || !ok {
+				// This world query's signature doesn't match, proceed to the next world query.
+				continue outer
+			}
+		}
+
+		// Query should match, return the index of this query.
+		// Delete the created query first.
+		ba.destroy(&query_sig)
+		return index
+	}
+
+	// Query didn't match, make a new one.
+
+	// Get the signatures matching our query signature
+    indices_arr := make([dynamic]int)
+
+    query_iter := ba.make_iterator(&query_sig)
+    next_bit, ok := ba.iterate_by_set(&query_iter)
+
+    if ok {
+        for &sig, index in world.signature_array {
+            res, ok := ba.get(&sig, next_bit)
+            if res && ok {
+                append(&indices_arr, index)
+            }
+        }
+    }
+    
+    for next_bit, ok = ba.iterate_by_set(&query_iter); ok; next_bit, ok = ba.iterate_by_set(&query_iter) {
+        remove_indices := make([dynamic]int, context.temp_allocator)
+
+        for &sig_index, index in indices_arr {
+            res, ok := ba.get(&world.signature_array[sig_index], next_bit)
+            if !res || !ok {
+                // Don't use this signature
+                append(&remove_indices, index)
+            }
+        }
+
+        for i := len(remove_indices) - 1; i >= 0; i -= 1 {
+            unordered_remove(&indices_arr, remove_indices[i])
+        }
+    }
+
+	// We have a list of matching indices, add that to an output Query and return.
+	out: Cached_Query
+	out.signature = query_sig
+	out.matching = indices_arr
+	
+	// Add query to the world.
+	sync.lock(&world.query_mutex)
+	append(&world.query_array, out)
+	output_index := len(world.query_array) - 1
+	sync.unlock(&world.query_mutex)
+
+	return output_index
+}
+
+ecs_query_destroy :: proc(query: ^Cached_Query) {
+	delete(query.matching)
+}
+
+// # Query
+// A list of query IDs used by a system. This is typically passed as a parameter to a system, which the system then calls ecs_query() on to
+// access individual queries.
+Query :: struct {
+	queries: [dynamic]Query_ID,
+}
+
 // # Query Term Filter
 // A filter given to a specific query. This simply determines what kind of operation we want to perform on a component we're searching for,
 // which is stored inside the overarching struct `Query_Term`.
@@ -534,78 +659,18 @@ ecs_without :: proc($T: typeid) -> Query_Term {
     }
 }
 
-// Queries through the World for entities matching a set of Query_Terms, and returns the result (A list of entities)
-ecs_query :: proc(world: ^World, terms: ..Query_Term) -> (out: Query_Result) {
+// Queries through the World for entities matching a given query, and returns a list of entities.
+ecs_query :: proc(world: ^World, query: Query, index: int) -> (out: Query_Result) {
     out.entities = make([dynamic]Entity, context.temp_allocator)
 
-    // Turn our terms into a signature
-    query_sig: Signature = {}
-    mutable_accessors := make([dynamic]^sync.Mutex, context.temp_allocator)
-    for term in terms {
-        switch term.filter {
-            case .With: {
-                ba.set(&query_sig, world.comp_map[term.id], true, context.temp_allocator)
-            }
-            case .With_Ptr: {
-                ba.set(&query_sig, world.comp_map[term.id], true, context.temp_allocator)
-                append(&mutable_accessors, &world.storage_array[world.comp_map[term.id]].mutex)
-            }
-            case .Without: {
-                ba.set(&query_sig, world.comp_map[term.id], false, context.temp_allocator)
-            }
-        }
-    }
+	// Get the cached query from the world
+	query_index := query.queries[index]
+	world_query := world.query_array[query_index]
 
-    // Get the signatures matching our query
-    sig_search_prof := profile_get(&local_profiler, "ECS_SIG_SEARCH")
-
-    profile_set_user_data(&sig_search_prof, "Signature Search Size:", ba.len(&query_sig))
-    profile_start(&sig_search_prof)
-
-    indices_arr := make([dynamic]int, context.temp_allocator)
-
-    take_step(&sig_search_prof, "ARR_MADE")
-
-    query_iter := ba.make_iterator(&query_sig)
-    next_bit, ok := ba.iterate_by_set(&query_iter)
-
-    if ok {
-        for &sig, index in world.signature_array {
-            res, ok := ba.get(&sig, next_bit)
-            if res && ok {
-                append(&indices_arr, index)
-            }
-        }
-    }
-
-    take_step_with_data(&sig_search_prof, "INDICES_CREATE_NUMS", "Sig Size:", len(world.signature_array))
-    
-    for next_bit, ok = ba.iterate_by_set(&query_iter); ok; next_bit, ok = ba.iterate_by_set(&query_iter) {
-        remove_indices := make([dynamic]int, context.temp_allocator)
-
-        for &sig_index, index in indices_arr {
-            res, ok := ba.get(&world.signature_array[sig_index], next_bit)
-            if !res || !ok {
-                // Don't use this signature
-                append(&remove_indices, index)
-            }
-        }
-
-        for i := len(remove_indices) - 1; i >= 0; i -= 1 {
-            unordered_remove(&indices_arr, remove_indices[i])
-        }
-    }
-
-    take_step(&sig_search_prof, "SIGNATURE_ITER")
-
-    // Add the entities in said signature indices to our result
-    for index in indices_arr {
+    // Add the entities from the query's matching signatures to the result
+    for index in world_query.matching {
         append_elems(&out.entities, ..world.signature_storages[index].index_map[:])
     }
-
-    take_step_with_data(&sig_search_prof, "APPENDED_ELEMS", "Indices Arr Size:", len(indices_arr))
-
-    profile_end(&sig_search_prof)
 
     // Done.
     return
