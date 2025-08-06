@@ -1,6 +1,7 @@
 package milk
 
 import "core:fmt"
+import "core:math"
 import "core:strings"
 import SDL "vendor:sdl3"
 
@@ -12,10 +13,77 @@ Button_Code :: SDL.GamepadButton
 
 Mouse_Code :: SDL.MouseButtonFlag
 
+// Corresponds to either the left or right joystick on a gamepad.
+Joystick_ID :: enum {
+    LEFT,
+    RIGHT,
+}
+
+Joystick_Axis :: enum {
+    UP,
+    DOWN,
+    LEFT,
+    RIGHT,
+}
+
+Joystick_Code :: struct {
+    axis: SDL.GamepadAxis,
+    strength: i16,
+}
+
+// Creates a joystick code given an ID and axis, with a default strength of 1.
+joystick_code :: proc(id: Joystick_ID, axis: Joystick_Axis) -> (out: Joystick_Code) {
+    switch id {
+        case .LEFT: {
+            switch axis {
+                case .LEFT: {
+                    out.axis = .LEFTX
+                    out.strength = -1
+                }
+                case .RIGHT: {
+                    out.axis = .LEFTX
+                    out.strength = 1
+                }
+                case .UP: {
+                    out.axis = .LEFTY
+                    out.strength = -1
+                }
+                case .DOWN: {
+                    out.axis = .LEFTY
+                    out.strength = 1
+                }
+            }
+        }
+        case .RIGHT: {
+            switch axis {
+                case .LEFT: {
+                    out.axis = .RIGHTX
+                    out.strength = -1
+                }
+                case .RIGHT: {
+                    out.axis = .RIGHTX
+                    out.strength = 1
+                }
+                case .UP: {
+                    out.axis = .RIGHTY
+                    out.strength = -1
+                }
+                case .DOWN: {
+                    out.axis = .RIGHTY
+                    out.strength = 1
+                }
+            }
+        }
+    }
+
+    return
+}
+
 Input_Code :: union {
     Key_Code,
     Button_Code,
     Mouse_Code,
+    Joystick_Code
 }
 
 Mouse_State :: struct {
@@ -164,6 +232,20 @@ gamepad_state_just_released :: proc(state: ^Gamepad_State, code: Button_Code) ->
     return state.previous[code] && !state.current[code]
 }
 
+joystick_pressed :: proc(state: ^Gamepad_State, code: Joystick_Code) -> bool {
+    value := SDL.GetGamepadAxis(state.gamepad, code.axis)
+    // Ensure the value is pointed in the right direction
+    value *= (code.strength / math.abs(code.strength))
+
+    // Ensure the value is not equal to zero (no input) and that the value minus strength is greater or equal to zero (just enough input)
+    if value != 0 && value - math.abs(code.strength) >= 0 {
+        return true
+    }
+
+    // Input was zero, or in the wrong direction
+    return false
+}
+
 Input_Method :: union {
     ^Keyboard_State,
     ^Gamepad_State,
@@ -188,6 +270,7 @@ Input_Action :: struct {
     keys: [dynamic]Key_Code,
     buttons: [dynamic]Button_Code,
     mouse_buttons: [dynamic]Mouse_Code,
+    joysticks: [dynamic]Joystick_Code,
 }
 
 // # Input State
@@ -231,6 +314,9 @@ input_state_register_input :: proc(state: ^Input_State, name: string, codes: []I
             case Mouse_Code: {
                 append(&action.mouse_buttons, c)
             }
+            case Joystick_Code: {
+                append(&action.joysticks, c)
+            }
         }
     }
 
@@ -250,7 +336,9 @@ input_state_destroy :: proc(state: ^Input_State) {
         delete(input.buttons)
         delete(input.keys)
         delete(input.mouse_buttons)
+        delete(input.joysticks)
     }
+
     delete_map(state.input_map)
 }
 
@@ -334,6 +422,12 @@ input_pressed :: proc(method: Input_Method, name: string) -> bool {
 
             for button in action.buttons {
                 if gamepad_state_pressed(m, button) {
+                    return true
+                }
+            }
+
+            for joystick in action.joysticks {
+                if joystick_pressed(m, joystick) {
                     return true
                 }
             }

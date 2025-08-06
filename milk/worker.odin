@@ -4,44 +4,38 @@ import "core:fmt"
 import "core:os"
 import "core:mem"
 import "core:sync"
-import "core:container/queue"
 import "core:thread"
 import "core:time"
-
-// Stores all the data we need for a fixed timestep loop within each worker thread
-// The timestep is centralized within the context, each loop needs its own accumulator
-Timestep :: struct {
-    // The length between the last frame and now
-    frame_duration: f64,
-    // An accumulation of frame time as well as any leftover bits that add up
-    accumulator: f64,
-    // A half-step between each real frame for interpolated rendering
-    alpha: f64,
-}
-
-timestep_new :: proc(prev_time: time.Tick) -> Timestep {
-    return Timestep {
-        frame_duration = time.duration_seconds(time.tick_since(prev_time)),
-        accumulator = 0.0,
-        alpha = 0.0,
-    }
-}
 
 Worker_Pool :: struct {
     allocator: mem.Allocator,
     mutex: sync.Mutex,
 
-    // Atomic variables
-    num_waiting: int,
-    num_in_processing: int,
-    num_outstanding: int,
-
     is_running: bool,
 
     threads: []^thread.Thread,
 
-    tasks: queue.Queue(Task),
+    // Timestep
+    prev_time: time.Tick,
+    frame_duration: f64,
+
+    // Scheduling
+    schedule_list: []Schedule,
+    active_indices: [dynamic]int,
+    // The index of the schedule we're currently tracking.
+    schedule_index: int,
+    // The index of the next available task within the schedule we're currently tracking.
+    task_index: int,
+    // Whether we've finished reading through tasks.
+    out_of_tasks: bool,
+    job_list: [dynamic]Task,
     tasks_done: map[typeid]struct {},
+    // A counter of tasks in progress
+    tasks_in_progress: int,
+    // A counter of jobs in progress
+    jobs_in_progress: int,
+    // The maximum amount of jobs in progress
+    max_jobs: int,
 
     // Sync
     sync: sync.Barrier,
@@ -50,9 +44,10 @@ Worker_Pool :: struct {
 worker_pool_new :: proc(pool: ^Worker_Pool, allocator: mem.Allocator, thread_count: int) {
     context.allocator = allocator
     pool.allocator = allocator
-    queue.init(&pool.tasks)
     pool.tasks_done = {}
     pool.threads = make([]^thread.Thread, max(thread_count, 1))
+    pool.max_jobs = os.processor_core_count() / 4
+    pool.prev_time = time.tick_now()
 
     pool.is_running = true
     sync.barrier_init(&pool.sync, thread_count + 1)
@@ -69,8 +64,7 @@ worker_pool_new :: proc(pool: ^Worker_Pool, allocator: mem.Allocator, thread_cou
 }
 
 worker_pool_destroy :: proc(pool: ^Worker_Pool) {
-    queue.clear(&pool.tasks)
-    queue.destroy(&pool.tasks)
+    delete(pool.task_slice)
     delete(pool.tasks_done)
 
     for &t in pool.threads {
@@ -92,7 +86,7 @@ worker_pool_join :: proc(pool: ^Worker_Pool) {
     sync.atomic_store(&pool.is_running, false)
 
     // The pool is no longer running, so clear the queue and if threads are still waiting stop them
-    queue.clear(&pool.tasks)
+    pool.task_slice = {}
 
     // Wait for start
     sync.barrier_wait(&pool.sync)
@@ -117,10 +111,18 @@ worker_pool_join :: proc(pool: ^Worker_Pool) {
     }
 }
 
-worker_pool_init_queue :: proc(pool: ^Worker_Pool, task_list: []Task) {
+worker_pool_init_schedules :: proc(pool: ^Worker_Pool, schedule_list: []Schedule) {
     sync.guard(&pool.mutex)
 
-    queue.init_with_contents(&pool.tasks, task_list)
+    pool.schedule_list = schedule_list
+
+    pool.frame_duration = time.duration_seconds(time.tick_since(pool.prev_time))
+    pool.prev_time = time.tick_now()
+
+    // Find schedules that will run this frame.
+    for &sched in pool.schedule_list {
+        sched.accumulator += pool.frame_duration
+    }
 }
 
 worker_pool_shutdown :: proc(pool: ^Worker_Pool, exit_code: int = 1) {
@@ -133,20 +135,60 @@ worker_pool_shutdown :: proc(pool: ^Worker_Pool, exit_code: int = 1) {
         data := cast(^Worker_Thread_Data)t.data
         if data.task.systems != nil {
             pool.tasks_done[data.task.name] = {}
-            sync.atomic_sub(&pool.num_outstanding, 1)
-            sync.atomic_sub(&pool.num_in_processing, 1)
+            sync.atomic_sub(&pool.tasks_in_progress, 1)
         }
     }
 }
 
-worker_pool_pop_waiting :: proc(pool: ^Worker_Pool) -> (task: Task, ok: bool) {
+// Request a new Task or Job
+worker_pool_request_task :: proc(pool: ^Worker_Pool) -> (task: Task, ok: bool) {
     sync.guard(&pool.mutex)
 
-    if queue.len(pool.tasks) != 0 {
-        sync.atomic_sub(&pool.num_waiting, 1)
-        sync.atomic_add(&pool.num_in_processing, 1)
-        task = queue.pop_front(&pool.tasks)
+    if len(pool.job_list) != 0 && sync.atomic_load(&pool.jobs_in_progress) < sync.atomic_load(&pool.max_jobs) {
+        // Recheck to ensure availability hasn't changed from another thread.
+        if sync.atomic_load(&pool.jobs_in_progress) < sync.atomic_load(&pool.max_jobs) {
+            task = pool.job_list[0]
+            ok = true
+            unordered_remove(&pool.job_list, 0)
+            sync.atomic_add(&pool.jobs_in_progress, 1)
+            return
+        }
+    }
+
+    // Recursively searches to find the next task with satisfied dependencies.
+    check_deps :: proc(pool: ^Worker_Pool, start_index: int) -> (task: Task, ok: bool) {
+        task = pool.task_slice[start_index]
         ok = true
+
+        // Ensure any dependencies have been sufficed
+        if len(task.dependencies) != 0 {
+            for dep in task.dependencies {
+                if dep not_in pool.tasks_done {
+                    // Dependency not done yet, move to next task.
+                    if len(pool.task_slice) == start_index + 1 {
+                        // We've reached the end of the list, start over
+                        return check_deps(pool, 0)
+                    }
+
+                    return check_deps(pool, start_index + 1)
+                }
+            }
+        }
+
+        // Dependencies are fulfilled or don't exist
+        return task, ok
+    }
+
+    // Using task instead
+    if len(pool.task_slice) != 0 {
+        sync.atomic_add(&pool.tasks_in_progress, 1)
+        task, ok = check_deps(pool, 0)
+
+        if len(pool.task_slice) != 1 {
+            pool.task_slice = pool.task_slice[1:]
+        } else {
+            pool.task_slice = {}
+        }
     }
 
     return
@@ -160,7 +202,7 @@ worker_pool_clear_done :: proc(pool: ^Worker_Pool) {
     }
 
     // Clear the queue out too
-    queue.clear(&pool.tasks)
+    pool.task_slice = {}
 }
 
 Worker_Thread_Data :: struct {
@@ -192,21 +234,9 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
     outer: for sync.atomic_load(&pool.is_running) {
         sync.barrier_wait(&pool.sync)
 
-        inner: for task, ok := worker_pool_pop_waiting(pool); ok; task, ok = worker_pool_pop_waiting(pool) {
+        inner: for task, ok := worker_pool_request_task(pool); ok; task, ok = worker_pool_request_task(pool) {
             // Run the task
             accumulator = d.ctx.timestep.accumulator
-
-            if len(task.dependencies) != 0 {
-                for dep in task.dependencies {
-                    if dep not_in pool.tasks_done {
-                        // A dependency is not done yet, push this task back onto the queue and move on.
-                        sync.lock(&pool.mutex)
-                        queue.push_back(&pool.tasks, task)
-                        sync.unlock(&pool.mutex)
-                        continue inner
-                    }
-                }
-            }
 
             if task.type == .Update {
                 for accumulator >= d.ctx.update_fps {
@@ -219,8 +249,7 @@ worker_thread_proc :: proc(t: ^thread.Thread) {
             }
 
             pool.tasks_done[task.name] = {}
-            sync.atomic_sub(&pool.num_outstanding, 1)
-            sync.atomic_sub(&pool.num_in_processing, 1)
+            sync.atomic_sub(&pool.tasks_in_progress, 1)
         }
 
         // Out of tasks, submit command pool.

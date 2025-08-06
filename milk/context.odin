@@ -65,10 +65,6 @@ Context :: struct {
 
     // Workers
     
-    // A queue of tasks passed to each thread.
-    task_queue: queue.Queue(Task),
-    // The timestep of the application
-    timestep: Timestep,
     // A list of thread-local profilers, submitted at the end.
     thread_profilers: [dynamic]Profiler,
     // A mutex to access the thread profilers.
@@ -165,7 +161,6 @@ context_run :: proc(ctx: ^Context) {
 
     // Fixed timestep
     prev_time := time.tick_now()
-    ctx.timestep = timestep_new(prev_time)
 
     // Prior frame transforms
     // We pass these to draw tasks so that they can perform interpolation
@@ -185,16 +180,6 @@ context_run :: proc(ctx: ^Context) {
 
     run_loop: for !ctx.should_quit {
         profile_start(&task_profiler)
-
-        // Update fixed timestep
-        ctx.timestep.frame_duration = time.duration_seconds(time.tick_since(prev_time))
-        //fmt.println(1 / ctx.timestep.frame_duration)
-        prev_time = time.tick_now()
-
-        // Get the alpha leftover for draw tasks
-        ctx.timestep.accumulator += ctx.timestep.frame_duration
-        UPDATE_FRAME: bool = (ctx.timestep.accumulator >= ctx.update_fps)
-        profile_set_user_data(&task_profiler, ctx.scene.frame_count, UPDATE_FRAME)
 
         // Poll events
         for SDL.PollEvent(&event) {
@@ -266,8 +251,6 @@ context_run :: proc(ctx: ^Context) {
         }
 
         ctx.timestep.alpha = temp_accumulator / ctx.update_fps
-
-        worker_pool_init_queue(&worker_pool, ctx.scene.task_list[:])
 
         take_step(&task_profiler, "Add Modules")
 
